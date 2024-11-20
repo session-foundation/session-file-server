@@ -315,7 +315,7 @@ def get_session_version():
     if platform not in ("desktop", "android", "ios"):
         app.logger.warn("Invalid session platform '{}'".format(platform))
         return error_resp(http.NOT_FOUND)
-    project = "oxen-io/session-" + platform
+    project = "session-foundation/session-" + platform
 
     # If we were provided with auth headers then validate the authentication (if they weren't provided
     # then just continue as usual for backwards compatibility)
