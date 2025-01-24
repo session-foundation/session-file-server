@@ -5,3 +5,11 @@ skip-magic-trailing-comma = true
 target-version = ['py38']
 include = '\.py$'
 extend-exclude = 'libonionrequests'
+
+[project]
+name = "session-file-server"
+version = "0.1.0"
+description = "Official Python implementation of the Session file server "
+license = {text = "GNU GPLv3"}
+readme = "README.md"
+requires-python = "==3.8.*"
