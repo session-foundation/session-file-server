@@ -21,7 +21,7 @@ docker run hello-world # this command should print "Hello from Docker!"
 Then, build the container image for session-file-server-dev as
 
 ```bash
-git clone git@github.com:oxen-io/session-file-server.git
+git clone git@github.com:session-foundation/session-file-server.git
 cd session-file-server
 docker build . -f contrib/docker/Dockerfile.dev -t session-file-server
 ```
