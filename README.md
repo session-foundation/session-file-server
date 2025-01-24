@@ -41,18 +41,19 @@ Everything is stored in PostgreSQL; no local file storage is used at all.
 
 1. Install the required Python packages:
 
-    ```bash
-       sudo apt install python3 python3-flask python3-coloredlogs python3-requests python3-pip
+   ```bash
+   sudo apt install python3 python3-flask python3-coloredlogs python3-requests python3-pip
+   pip3 install psycopg psycopg_pool  # Or as above, once these enter Debian/Ubuntu
+   ```
 
-       pip3 install psycopg psycopg_pool  # Or as above, once these enter Debian/Ubuntu
-    ```
-
-    You may optionally also install `psycopg_c` for some performance improvements; this likely
-    requires first installing libpq-dev for postgresql headers.
+   You may optionally also install `psycopg_c` for some performance improvements; this likely
+   requires first installing libpq-dev for postgresql headers.
 
 2. Build the required oxen Python modules:
 
-       make
+   ```bash
+   make
+   ```
 
 3. Set up a postgresql database for the files to live in.  Note that this can be *large* because
    file content is stored in the database, so ensure it is on a filesystem with lots of available
