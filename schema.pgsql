@@ -54,9 +54,9 @@ CREATE VIEW release_versions AS SELECT * FROM versions WHERE NOT prerelease;
 CREATE VIEW prerelease_versions AS SELECT * FROM versions WHERE prerelease;
 
 -- Insert project information
-INSERT INTO projects (name) VALUES ('oxen-io/session-desktop');
-INSERT INTO projects (name) VALUES ('oxen-io/session-android');
-INSERT INTO projects (name) VALUES ('oxen-io/session-ios');
+INSERT INTO projects (name) VALUES ('session-foundation/session-desktop');
+INSERT INTO projects (name) VALUES ('session-foundation/session-android');
+INSERT INTO projects (name) VALUES ('session-foundation/session-ios');
 
 -- Account Versioning
 CREATE TABLE account_version_checks (
