@@ -317,6 +317,14 @@ def get_session_version():
         return error_resp(http.NOT_FOUND)
     project = "session-foundation/session-" + platform
 
+    platform_os = request.args.get("os")
+    platform_arch = request.args.get("arch")
+    release_channel = request.args.get("releases")
+
+    # Backwards compatibility from before apple silicon builds
+    if platform_os is not None and platform_os == 'darwin' and platform_arch is None:
+        platform_arch = 'x86_64'
+
     # If we were provided with auth headers then validate the authentication (if they weren't provided
     # then just continue as usual for backwards compatibility)
     blinded_id = valid_blinded_version_id_for_auth(request, False)
@@ -329,9 +337,9 @@ def get_session_version():
             with psql.transaction(), psql.cursor() as cur:
                 cur.execute(
                     """
-                    INSERT INTO account_version_checks (blinded_id, platform, timestamp)
+                    INSERT INTO account_version_checks (blinded_id, platform, platform_os, platform_arch, release_channel, timestamp)
                     VALUES (%s, %s, NOW())""",
-                    (blinded_id, platform),
+                    (blinded_id, platform, platform_os, platform_arch, release_channel),
                 )
 
     with db.psql.cursor() as cur:
@@ -345,13 +353,22 @@ def get_session_version():
 
         updated = row[0]
 
-        # Fetch the latest release version
-        cur.execute(
-            """
-            SELECT id, version, name, notes from release_versions
-            WHERE proj_name = %s ORDER BY version_code DESC""",
-            (project,),
-        )
+        if release_channel is not None and release_channel == 'alpha':
+            # Fetch the latest alpha release version
+            cur.execute(
+                """
+                SELECT id, version, name, notes from alpharelease_versions
+                WHERE proj_name = %s ORDER BY version_code DESC""",
+                (project,),
+            )
+        else:
+            # Fetch the latest release version
+            cur.execute(
+                """
+                SELECT id, version, name, notes from release_versions
+                WHERE proj_name = %s ORDER BY version_code DESC""",
+                (project,),
+            )
 
         row = cur.fetchone()
         if row is None:

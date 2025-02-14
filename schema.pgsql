@@ -57,14 +57,15 @@ CREATE VIEW prerelease_versions AS SELECT * FROM versions WHERE prerelease;
 CREATE VIEW alpharelease_versions AS SELECT * FROM versions WHERE alpharelease;
 
 -- Insert project information
-INSERT INTO projects (name) VALUES ('session-foundation/session-desktop');
-INSERT INTO projects (name) VALUES ('session-foundation/session-android');
-INSERT INTO projects (name) VALUES ('session-foundation/session-ios');
+INSERT INTO projects (name) VALUES ('yougotwill/session-desktop');
 
 -- Account Versioning
 CREATE TABLE account_version_checks (
     blinded_id varchar(66) NOT NULL,
     platform varchar(25) NOT NULL,
+    platform_os varchar(25),
+    platform_arch varchar(25),
+    release_channel varchar(6) DEFAULT 'latest',
     timestamp TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
 );
 
