@@ -56,10 +56,10 @@ def periodic(signum):
                     with psql.transaction():
                         for release in recent:
                             v = release["tag_name"]
-                            vresult = re.match(r'v?(\d{1,3})\.(\d{1,3})\.(\d{1,3})$', v)
+                            vresult = re.match(r'v?(\d{1,3})\.(\d{1,3})\.(\d{1,3})(?:-([a-zA-Z0-9]+))?$', v)
                             if not vresult:
                                 app.logger.warn(
-                                    f"Unknown {project} tag does not look like a x.y.z version: {v}'"
+                                    f"Unknown {project} tag does not look like a x.y.z or x.y.z-alpha version: {v}'"
                                 )
                                 continue
                             vcode = (
@@ -70,14 +70,16 @@ def periodic(signum):
 
                             cur.execute(
                                 """
-                                INSERT INTO releases (project, prerelease, version_code, url, name, notes)
-                                VALUES (%s, %s, %s, %s, %s, %s)
+                                INSERT INTO releases (project, prerelease, alpharelease, version_code, url, name, notes)
+                                VALUES (%s, %s, %s, %s, %s, %s, %s)
                                 ON CONFLICT(project, version_code) DO UPDATE SET
                                     prerelease = EXCLUDED.prerelease,
+                                    alpharelease = EXCLUDED.alpharelease,
                                     url = EXCLUDED.url,
                                     name = EXCLUDED.name,
                                     notes = EXCLUDED.notes
                                     WHERE releases.prerelease != EXCLUDED.prerelease
+                                        OR releases.alpharelease != EXCLUDED.alpharelease
                                         OR releases.url != EXCLUDED.url
                                         OR releases.name != EXCLUDED.name
                                         OR releases.notes != EXCLUDED.notes
@@ -86,6 +88,7 @@ def periodic(signum):
                                 (
                                     projid,
                                     bool(release.get("prerelease")),
+                                    vresult.group(4) == "alpha",
                                     vcode,
                                     release.get("html_url"),
                                     release.get("name"),

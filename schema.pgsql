@@ -24,6 +24,7 @@ CREATE TABLE releases (
     id BIGSERIAL PRIMARY KEY,
     project BIGINT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
     prerelease BOOLEAN NOT NULL DEFAULT FALSE,
+    alpharelease BOOLEAN NOT NULL DEFAULT FALSE,
     version_code BIGINT NOT NULL,
     url varchar(255) NOT NULL,
     name varchar(255),
@@ -45,13 +46,15 @@ CREATE VIEW versions AS
         version_code,
         version_code / 1000000 || '.' || version_code % 1000000 / 1000 || '.' || version_code % 1000 AS version,
         prerelease,
+        alpharelease,
         url,
         releases.name AS name,
         notes
     FROM releases JOIN projects ON releases.project = projects.id;
 
-CREATE VIEW release_versions AS SELECT * FROM versions WHERE NOT prerelease;
+CREATE VIEW release_versions AS SELECT * FROM versions WHERE NOT prerelease AND NOT alpharelease;
 CREATE VIEW prerelease_versions AS SELECT * FROM versions WHERE prerelease;
+CREATE VIEW alpharelease_versions AS SELECT * FROM versions WHERE alpharelease;
 
 -- Insert project information
 INSERT INTO projects (name) VALUES ('session-foundation/session-desktop');
