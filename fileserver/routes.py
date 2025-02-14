@@ -338,7 +338,7 @@ def get_session_version():
                 cur.execute(
                     """
                     INSERT INTO account_version_checks (blinded_id, platform, platform_os, platform_arch, release_channel, timestamp)
-                    VALUES (%s, %s, NOW())""",
+                    VALUES (%s, %s, %s, %s, %s, NOW())""",
                     (blinded_id, platform, platform_os, platform_arch, release_channel),
                 )
 
@@ -374,12 +374,17 @@ def get_session_version():
         if row is None:
             app.logger.warn("{} has no releases!".format(project))
             return error_resp(http.BAD_GATEWAY)
+        
+        releaseVersion =  row[1]
+
+        if release_channel == "alpha":
+            releaseVersion += "-alpha"
 
         release_id = row[0]
         response = {
             "status_code": 200,
             "updated": updated,
-            "result": row[1]
+            "result":releaseVersion
         }
 
         if row[2]:
