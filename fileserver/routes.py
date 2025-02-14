@@ -319,7 +319,7 @@ def get_session_version():
 
     platform_os = request.args.get("os")
     platform_arch = request.args.get("arch")
-    release_channel = request.args.get("releases")
+    release_channel = request.args.get("release_channel")
 
     # Backwards compatibility from before apple silicon builds
     if platform_os is not None and platform_os == 'darwin' and platform_arch is None:
@@ -353,7 +353,7 @@ def get_session_version():
 
         updated = row[0]
 
-        if release_channel is not None and release_channel == 'alpha':
+        if release_channel == "alpha":
             # Fetch the latest alpha release version
             cur.execute(
                 """
