@@ -41,9 +41,4 @@ curl "http://localhost:8000/session_version?platform=desktop"
 
 ### Persist the server pubkey
 
-If you want to persist the server pubkey, you can create a file called `key_x25519` in the root of the repository. This file will be copied to the container and used as the server pubkey.
-
-An example private key is:
-```
-ebe72eee24727711cba3a4523fe99ac49e832c1f3f35817c7fe266c5de94e1a1
-```
+If you want to persist the server pubkey, you can create a file called `key_x25519` in the root of the repository. This file will be copied to the container and used to load the server pubkey. Note the private key must be in bytes.
