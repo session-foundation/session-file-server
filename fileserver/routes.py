@@ -319,7 +319,7 @@ def get_session_version():
 
     platform_os = request.args.get("os")
     platform_arch = request.args.get("arch")
-    release_channel = request.args.get("release_channel")
+    release_channel = request.args.get("release_channel") if request.args.get("release_channel") else 'latest'
 
     # Backwards compatibility from before apple silicon builds
     if platform_os is not None and platform_os == 'darwin' and platform_arch is None:
@@ -357,7 +357,7 @@ def get_session_version():
             # Fetch the latest alpha release version
             cur.execute(
                 """
-                SELECT id, version, name, notes from alpharelease_versions
+                SELECT id, version, name, notes, alpharelease from alpharelease_versions
                 WHERE proj_name = %s ORDER BY version_code DESC""",
                 (project,),
             )
@@ -365,7 +365,7 @@ def get_session_version():
             # Fetch the latest release version
             cur.execute(
                 """
-                SELECT id, version, name, notes from release_versions
+                SELECT id, version, name, notes, alpharelease from release_versions
                 WHERE proj_name = %s ORDER BY version_code DESC""",
                 (project,),
             )
@@ -375,16 +375,17 @@ def get_session_version():
             app.logger.warn("{} has no releases!".format(project))
             return error_resp(http.BAD_GATEWAY)
         
-        releaseVersion =  row[1]
-
-        if release_channel == "alpha":
-            releaseVersion += "-alpha"
-
         release_id = row[0]
+        release_version =  row[1]
+        alpha_build_number = row[4]
+
+        if alpha_build_number is not None:
+            release_version += f"-alpha.{alpha_build_number}"
+
         response = {
             "status_code": 200,
             "updated": updated,
-            "result":releaseVersion
+            "result": release_version
         }
 
         if row[2]:
@@ -416,7 +417,7 @@ def get_session_version():
         # Add prerelease info if present
         cur.execute(
             """
-            SELECT id, version, name, notes from prerelease_versions
+            SELECT id, version, name, notes, alpharelease from prerelease_versions
             WHERE proj_name = %s ORDER BY version_code DESC""",
             (project,),
         )
@@ -424,8 +425,14 @@ def get_session_version():
         row = cur.fetchone()
         if row is not None:
             prerelease_id = row[0]
+            prerelease_version =  row[1]
+            prerelease_alpha_build_number = row[4]
+
+            if prerelease_alpha_build_number is not None:
+                prerelease_version += f"-alpha.{prerelease_alpha_build_number}"
+
             response["prerelease"] = {
-                "result": row[1],
+                "result": prerelease_version,
                 "updated": updated,
             }
 

@@ -56,10 +56,10 @@ def periodic(signum):
                     with psql.transaction():
                         for release in recent:
                             v = release["tag_name"]
-                            vresult = re.match(r'v?(\d{1,3})\.(\d{1,3})\.(\d{1,3})(?:-([a-zA-Z0-9]+))?$', v)
+                            vresult = re.match(r'v?(\d{1,3})\.(\d{1,3})\.(\d{1,3})(?:-([a-zA-Z0-9]+)(?:\.(\d+))?)?$', v)
                             if not vresult:
                                 app.logger.warn(
-                                    f"Unknown {project} tag does not look like a x.y.z or x.y.z-alpha version: {v}'"
+                                    f"Unknown {project} tag does not look like a x.y.z or x.y.z-alpha.b version: {v}'"
                                 )
                                 continue
                             vcode = (
@@ -67,6 +67,11 @@ def periodic(signum):
                                 + 1000 * int(vresult.group(2))
                                 + int(vresult.group(3))
                             )
+
+                            alpha_version = None
+                            
+                            if vresult.group(4) is not None and re.match(r'alpha', vresult.group(4)) :
+                                alpha_version = int(vresult.group(5)) if vresult.group(5) else None
 
                             cur.execute(
                                 """
@@ -88,7 +93,7 @@ def periodic(signum):
                                 (
                                     projid,
                                     bool(release.get("prerelease")),
-                                    vresult.group(4) == "alpha",
+                                    alpha_version,
                                     vcode,
                                     release.get("html_url"),
                                     release.get("name"),
