@@ -68,10 +68,10 @@ def periodic(signum):
                                 + int(vresult.group(3))
                             )
 
-                            alpha_version = None
+                            alpha_build_number = None
                             
                             if vresult.group(4) is not None and re.match(r'alpha', vresult.group(4)) :
-                                alpha_version = int(vresult.group(5)) if vresult.group(5) else None
+                                alpha_build_number = int(vresult.group(5)) if vresult.group(5) else None
 
                             cur.execute(
                                 """
@@ -83,17 +83,17 @@ def periodic(signum):
                                     url = EXCLUDED.url,
                                     name = EXCLUDED.name,
                                     notes = EXCLUDED.notes
-                                    WHERE releases.prerelease != EXCLUDED.prerelease
-                                        OR releases.alpharelease != EXCLUDED.alpharelease
+                                    WHERE releases.alpharelease < EXCLUDED.alpharelease
+                                        AND (releases.prerelease != EXCLUDED.prerelease
                                         OR releases.url != EXCLUDED.url
                                         OR releases.name != EXCLUDED.name
-                                        OR releases.notes != EXCLUDED.notes
+                                        OR releases.notes != EXCLUDED.notes)
                                     RETURNING id
                                 """,
                                 (
                                     projid,
                                     bool(release.get("prerelease")),
-                                    alpha_version,
+                                    alpha_build_number,
                                     vcode,
                                     release.get("html_url"),
                                     release.get("name"),
