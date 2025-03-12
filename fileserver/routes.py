@@ -317,13 +317,7 @@ def get_session_version():
         return error_resp(http.NOT_FOUND)
     project = "session-foundation/session-" + platform
 
-    platform_os = request.args.get("os")
-    platform_arch = request.args.get("arch")
     release_channel = request.args.get("release_channel") if request.args.get("release_channel") else 'latest'
-
-    # Backwards compatibility from before apple silicon builds
-    if platform_os is not None and platform_os == 'darwin' and platform_arch is None:
-        platform_arch = 'x86_64'
 
     # If we were provided with auth headers then validate the authentication (if they weren't provided
     # then just continue as usual for backwards compatibility)
@@ -337,9 +331,9 @@ def get_session_version():
             with psql.transaction(), psql.cursor() as cur:
                 cur.execute(
                     """
-                    INSERT INTO account_version_checks (blinded_id, platform, platform_os, platform_arch, release_channel, timestamp)
+                    INSERT INTO account_version_checks (blinded_id, platform, release_channel, timestamp)
                     VALUES (%s, %s, %s, %s, %s, NOW())""",
-                    (blinded_id, platform, platform_os, platform_arch, release_channel),
+                    (blinded_id, platform, release_channel),
                 )
 
     with db.psql.cursor() as cur:
