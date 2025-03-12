@@ -353,22 +353,13 @@ def get_session_version():
 
         updated = row[0]
 
-        if release_channel == "alpha":
-            # Fetch the latest alpha release version
-            cur.execute(
-                """
-                SELECT id, version, name, notes, alpharelease from alpharelease_versions
-                WHERE proj_name = %s ORDER BY version_code DESC""",
-                (project,),
-            )
-        else:
-            # Fetch the latest release version
-            cur.execute(
-                """
-                SELECT id, version, name, notes, alpharelease from release_versions
-                WHERE proj_name = %s ORDER BY version_code DESC""",
-                (project,),
-            )
+        # Fetch the latest version
+        cur.execute(f"""
+            SELECT id, version, name, notes, alpharelease from {'alpha' if release_channel == 'alpha' else ''  }release_versions
+            WHERE proj_name = %s ORDER BY version_code DESC
+            """,
+            (project,)
+        )
 
         row = cur.fetchone()
         if row is None:
