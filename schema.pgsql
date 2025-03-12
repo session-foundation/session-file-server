@@ -44,9 +44,7 @@ CREATE VIEW versions AS
         releases.id as id,
         projects.name as proj_name,
         version_code,
-        version_code / 1000000 || '.' || version_code % 1000000 / 1000 || '.' || version_code % 1000 ||
-    (CASE WHEN alpharelease IS NOT NULL THEN '-alpha.' || alpharelease ELSE '')
-    AS version,
+        version_code / 1000000 || '.' || version_code % 1000000 / 1000 || '.' || version_code % 1000 || (CASE WHEN alpharelease IS NOT NULL THEN '-alpha.' || alpharelease ELSE '' END) AS version,
         prerelease,
         alpharelease,
         url,
