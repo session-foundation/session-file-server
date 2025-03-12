@@ -368,10 +368,6 @@ def get_session_version():
         
         release_id = row[0]
         release_version =  row[1]
-        alpha_build_number = row[4]
-
-        if alpha_build_number is not None:
-            release_version += f"-alpha.{alpha_build_number}"
 
         response = {
             "status_code": 200,
@@ -417,10 +413,6 @@ def get_session_version():
         if row is not None:
             prerelease_id = row[0]
             prerelease_version =  row[1]
-            prerelease_alpha_build_number = row[4]
-
-            if prerelease_alpha_build_number is not None:
-                prerelease_version += f"-alpha.{prerelease_alpha_build_number}"
 
             response["prerelease"] = {
                 "result": prerelease_version,
