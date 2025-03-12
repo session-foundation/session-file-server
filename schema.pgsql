@@ -57,7 +57,7 @@ CREATE VIEW prerelease_versions AS SELECT * FROM versions WHERE prerelease;
 CREATE VIEW alpharelease_versions AS SELECT * FROM versions WHERE alpharelease IS NOT NULL;
 
 -- Insert project information
-INSERT INTO projects (name) VALUES ('yougotwill/session-desktop');
+INSERT INTO projects (name) VALUES ('session-foundation/session-desktop');
 
 -- Account Versioning
 CREATE TABLE account_version_checks (
