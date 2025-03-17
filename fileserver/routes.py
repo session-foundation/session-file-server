@@ -332,7 +332,7 @@ def get_session_version():
                 cur.execute(
                     """
                     INSERT INTO account_version_checks (blinded_id, platform, release_channel, timestamp)
-                    VALUES (%s, %s, %s, %s, %s, NOW())""",
+                    VALUES (%s, %s, %s, NOW())""",
                     (blinded_id, platform, release_channel),
                 )
 
