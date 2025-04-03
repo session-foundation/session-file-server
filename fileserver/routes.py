@@ -418,7 +418,7 @@ def get_session_version():
 
             if row[6]:
                 response["prerelease"]["name"] = row[6]
-                
+
             if row[7]:
                 response["prerelease"]["notes"] = row[7]
 
