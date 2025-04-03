@@ -56,45 +56,40 @@ def periodic(signum):
                     with psql.transaction():
                         for release in recent:
                             v = release["tag_name"]
-                            vresult = re.match(r'v?(\d{1,3})\.(\d{1,3})\.(\d{1,3})(?:-([a-zA-Z0-9]+)(?:\.(\d+))?)?$', v)
+                            vresult = re.match(r'v?(\d{1,3})\.(\d{1,3})\.(\d{1,3})(?:-(alpha|beta)\.(\d+))?$', v)
                             if not vresult:
                                 app.logger.warn(
                                     f"Unknown {project} tag does not look like a x.y.z or x.y.z-alpha.b version: {v}'"
                                 )
                                 continue
-                            vcode = (
-                                1000000 * int(vresult.group(1))
-                                + 1000 * int(vresult.group(2))
-                                + int(vresult.group(3))
-                            )
 
-                            alpha_build_number = None
-                            
-                            if vresult.group(4) is not None and re.match(r'alpha', vresult.group(4)) :
-                                alpha_build_number = int(vresult.group(5)) if vresult.group(5) else None
+                            vmajor = int(vresult.group(1))
+                            vminor = int(vresult.group(2))
+                            vpatch = int(vresult.group(3))
+                            valpha = int(vresult.group(4)) if vresult.group(4) else None
 
                             cur.execute(
                                 """
-                                INSERT INTO releases (project, prerelease, alpharelease, version_code, url, name, notes)
-                                VALUES (%s, %s, %s, %s, %s, %s, %s)
-                                ON CONFLICT(project, version_code) DO UPDATE SET
+                                INSERT INTO releases (project, prerelease, vmajor, vminor, vpatch, valpha, url, name, notes)
+                                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                                ON CONFLICT(project, vmajor, vminor, vpatch, valpha) DO UPDATE SET
                                     prerelease = EXCLUDED.prerelease,
-                                    alpharelease = EXCLUDED.alpharelease,
                                     url = EXCLUDED.url,
                                     name = EXCLUDED.name,
                                     notes = EXCLUDED.notes
-                                    WHERE releases.alpharelease < EXCLUDED.alpharelease
-                                        AND (releases.prerelease != EXCLUDED.prerelease
+                                    WHERE releases.prerelease != EXCLUDED.prerelease
                                         OR releases.url != EXCLUDED.url
                                         OR releases.name != EXCLUDED.name
-                                        OR releases.notes != EXCLUDED.notes)
+                                        OR releases.notes != EXCLUDED.notes
                                     RETURNING id
                                 """,
                                 (
                                     projid,
                                     bool(release.get("prerelease")),
-                                    alpha_build_number,
-                                    vcode,
+                                    vmajor,
+                                    vminor,
+                                    vpatch,
+                                    valpha,
                                     release.get("html_url"),
                                     release.get("name"),
                                     release.get("body"),

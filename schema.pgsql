@@ -24,12 +24,14 @@ CREATE TABLE releases (
     id BIGSERIAL PRIMARY KEY,
     project BIGINT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
     prerelease BOOLEAN NOT NULL DEFAULT FALSE,
-    alpharelease BIGINT,
-    version_code BIGINT NOT NULL,
     url varchar(255) NOT NULL,
     name varchar(255),
     notes text,
-    UNIQUE(project, version_code)
+    vmajor SMALLINT NOT NULL,
+    vminor SMALLINT NOT NULL,
+    vpatch SMALLINT NOT NULL,
+    valpha SMALLINT,
+    UNIQUE(project, vmajor, vminor, vpatch, valpha)
 );
 
 CREATE TABLE release_assets (
@@ -41,20 +43,22 @@ CREATE INDEX ON release_assets(release);
 
 CREATE VIEW versions AS
     SELECT
-        releases.id as id,
-        projects.name as proj_name,
-        version_code,
-        version_code / 1000000 || '.' || version_code % 1000000 / 1000 || '.' || version_code % 1000 || (CASE WHEN alpharelease IS NOT NULL THEN '-alpha.' || alpharelease ELSE '' END) AS version,
+        releases.id AS id,
+        projects.name AS proj_name,
+        vmajor,
+        vminor,
+        vpatch,
+        valpha,
+        vmajor || '.' || vminor || '.' || vpatch || (CASE WHEN valpha IS NOT NULL THEN '-alpha.' || valpha ELSE '' END) AS version,
         prerelease,
-        alpharelease,
         url,
         releases.name AS name,
         notes
     FROM releases JOIN projects ON releases.project = projects.id;
 
-CREATE VIEW release_versions AS SELECT * FROM versions WHERE NOT prerelease AND alpharelease IS NULL;
+CREATE VIEW release_versions AS SELECT * FROM versions WHERE NOT prerelease AND valpha IS NULL;
 CREATE VIEW prerelease_versions AS SELECT * FROM versions WHERE prerelease;
-CREATE VIEW alpharelease_versions AS SELECT * FROM versions WHERE alpharelease IS NOT NULL;
+CREATE VIEW alpharelease_versions AS SELECT * FROM versions WHERE valpha IS NOT NULL;
 
 -- Insert project information
 INSERT INTO projects (name) VALUES ('session-foundation/session-desktop');

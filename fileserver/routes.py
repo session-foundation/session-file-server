@@ -338,8 +338,7 @@ def get_session_version():
 
     with db.psql.cursor() as cur:
         # Validate the project exists and retrieve when it was last updated
-        cur.execute("SELECT updated from projects WHERE name = %s", (project,),)
-
+        cur.execute("SELECT updated FROM projects WHERE name = %s", (project,),)
         row = cur.fetchone()
         if row is None:
             app.logger.warn("{} does not exist!".format(project))
@@ -349,8 +348,10 @@ def get_session_version():
 
         # Fetch the latest version
         cur.execute(f"""
-            SELECT id, version, name, notes, alpharelease from {'alpha' if release_channel == 'alpha' else ''  }release_versions
-            WHERE proj_name = %s ORDER BY version_code DESC
+            SELECT id, vmajor, vminor, vpatch, valpha, version, name, notes
+            FROM {'alpha' if release_channel == 'alpha' else ''}release_versions
+            WHERE proj_name = %s
+            ORDER BY vmajor DESC, vminor DESC, vpatch DESC, valpha DESC NULLS LAST
             """,
             (project,)
         )
@@ -359,9 +360,9 @@ def get_session_version():
         if row is None:
             app.logger.warn("{} has no releases!".format(project))
             return error_resp(http.BAD_GATEWAY)
-        
+
         release_id = row[0]
-        release_version =  row[1]
+        release_version = row[6]
 
         response = {
             "status_code": 200,
@@ -369,11 +370,11 @@ def get_session_version():
             "result": release_version
         }
 
-        if row[2]:
-            response["name"] = row[2]
+        if row[7]:
+            response["name"] = row[7]
 
-        if row[3]:
-            response["notes"] = row[3]
+        if row[8]:
+            response["notes"] = row[8]
 
         # Add release assets
         cur.execute(
@@ -392,32 +393,34 @@ def get_session_version():
                     "name": asset[0],
                     "url": asset[1]
                 })
-                
+
             response["assets"] = asset_info
 
         # Add prerelease info if present
         cur.execute(
             """
-            SELECT id, version, name, notes, alpharelease from prerelease_versions
-            WHERE proj_name = %s ORDER BY version_code DESC""",
+            SELECT id, vmajor, vminor, vpatch, valpha, version, name, notes
+            FROM prerelease_versions
+            WHERE proj_name = %s
+            ORDER BY vmajor DESC, vminor DESC, vpatch DESC, valpha DESC NULLS LAST""",
             (project,),
         )
 
         row = cur.fetchone()
         if row is not None:
             prerelease_id = row[0]
-            prerelease_version =  row[1]
+            prerelease_version = row[6]
 
             response["prerelease"] = {
                 "result": prerelease_version,
                 "updated": updated,
             }
 
-            if row[2]:
-                response["prerelease"]["name"] = row[2]
+            if row[7]:
+                response["prerelease"]["name"] = row[7]
 
-            if row[3]:
-                response["prerelease"]["notes"] = row[3]
+            if row[8]:
+                response["prerelease"]["notes"] = row[8]
 
             # Add prerelease assets
             cur.execute(
@@ -436,7 +439,7 @@ def get_session_version():
                         "name": asset[0],
                         "url": asset[1]
                     })
-                    
+
                 response["prerelease"]["assets"] = asset_info
 
         return json_resp(response)
