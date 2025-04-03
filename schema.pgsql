@@ -61,6 +61,8 @@ CREATE VIEW prerelease_versions AS SELECT * FROM versions WHERE prerelease;
 CREATE VIEW alpharelease_versions AS SELECT * FROM versions WHERE valpha IS NOT NULL;
 
 -- Insert project information
+INSERT INTO projects (name) VALUES ('session-foundation/session-android');
+INSERT INTO projects (name) VALUES ('session-foundation/session-ios');
 INSERT INTO projects (name) VALUES ('session-foundation/session-desktop');
 
 -- Account Versioning
