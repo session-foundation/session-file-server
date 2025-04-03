@@ -162,7 +162,7 @@ def submit_file(*, body=None, deprecated=False):
         body = request.data
 
     if not 0 < len(body) <= config.MAX_FILE_SIZE:
-        app.logger.warn(
+        app.logger.warning(
             "Rejecting upload of size {} ∉ (0, {}]".format(len(body), config.MAX_FILE_SIZE)
         )
         return error_resp(http.PAYLOAD_TOO_LARGE)
@@ -242,12 +242,12 @@ def submit_file(*, body=None, deprecated=False):
 def submit_file_old():
     input = request.json
     if input is None or "file" not in input:
-        app.logger.warn("Invalid request: did not find json with a 'file' property")
+        app.logger.warning("Invalid request: did not find json with a 'file' property")
         return error_resp(http.BAD_REQUEST)
 
     body = input["file"]
     if not 0 < len(body) <= config.MAX_FILE_SIZE_B64:
-        app.logger.warn(
+        app.logger.warning(
             "Rejecting upload of b64-encoded size {} ∉ (0, {}]".format(
                 len(body), config.MAX_FILE_SIZE_B64
             )
@@ -272,7 +272,7 @@ def get_file(id):
             response.headers.set("Content-Type", "application/octet-stream")
             return response
         else:
-            app.logger.warn("File '{}' does not exist".format(id))
+            app.logger.warning("File '{}' does not exist".format(id))
             return error_resp(http.NOT_FOUND)
 
 
@@ -287,7 +287,7 @@ def get_file_old(id):
         if row:
             return json_resp({"status_code": 200, "result": utils.encode_base64(row[0])})
         else:
-            app.logger.warn("File '{}' does not exist".format(id))
+            app.logger.warning("File '{}' does not exist".format(id))
             return error_resp(http.NOT_FOUND)
 
 
@@ -304,7 +304,7 @@ def get_file_info(id):
                 {"size": row[0], "uploaded": row[1].timestamp(), "expires": row[2].timestamp()}
             )
         else:
-            app.logger.warn("File '{}' does not exist".format(id))
+            app.logger.warning("File '{}' does not exist".format(id))
             return error_resp(http.NOT_FOUND)
 
 
@@ -313,7 +313,7 @@ def get_session_version():
     platform = request.args.get("platform")
 
     if platform not in ("desktop", "android", "ios"):
-        app.logger.warn("Invalid session platform '{}'".format(platform))
+        app.logger.warning("Invalid session platform '{}'".format(platform))
         return error_resp(http.NOT_FOUND)
     project = "session-foundation/session-" + platform
 
@@ -341,7 +341,7 @@ def get_session_version():
         cur.execute("SELECT updated FROM projects WHERE name = %s", (project,),)
         row = cur.fetchone()
         if row is None:
-            app.logger.warn("{} does not exist!".format(project))
+            app.logger.warning("{} does not exist!".format(project))
             return error_resp(http.BAD_GATEWAY)
 
         updated = row[0]
@@ -358,7 +358,7 @@ def get_session_version():
 
         row = cur.fetchone()
         if row is None:
-            app.logger.warn("{} has no releases!".format(project))
+            app.logger.warning("{} has no releases!".format(project))
             return error_resp(http.BAD_GATEWAY)
 
         release_id = row[0]
@@ -465,7 +465,7 @@ def get_token_info():
         )
         stats = cur.fetchone()
         if stats is None:
-            app.logger.warn("No token stats available!")
+            app.logger.warning("No token stats available!")
             return error_resp(http.BAD_GATEWAY)
 
         cur.execute(

@@ -44,7 +44,7 @@ def periodic(signum):
                     # If the latest release doesn't have version information then don't bother continuing
                     # this means something is invalid, or we were rate limited
                     if 'tag_name' not in latest:
-                        app.logger.warn(
+                        app.logger.warning(
                             f"'tag_name' key not found in latest release for project {project}"
                         )
                         continue
@@ -58,7 +58,7 @@ def periodic(signum):
                             v = release["tag_name"]
                             vresult = re.match(r'v?(\d{1,3})\.(\d{1,3})\.(\d{1,3})(?:-(alpha|beta)\.(\d+))?$', v)
                             if not vresult:
-                                app.logger.warn(
+                                app.logger.warning(
                                     f"Unknown {project} tag does not look like a x.y.z or x.y.z-alpha.b version: {v}'"
                                 )
                                 continue
