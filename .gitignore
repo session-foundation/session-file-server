@@ -2,3 +2,4 @@
 __pycache__
 /key_x25519
 .vscode
+.venv
