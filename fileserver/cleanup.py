@@ -66,7 +66,7 @@ def periodic(signum):
                             vmajor = int(vresult.group(1))
                             vminor = int(vresult.group(2))
                             vpatch = int(vresult.group(3))
-                            valpha = int(vresult.group(4)) if vresult.group(4) else None
+                            valpha = int(vresult.group(5)) if vresult.group(4) == 'alpha' and vresult.group(5) else None
 
                             cur.execute(
                                 """
