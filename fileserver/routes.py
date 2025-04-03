@@ -362,7 +362,7 @@ def get_session_version():
             return error_resp(http.BAD_GATEWAY)
 
         release_id = row[0]
-        release_version = row[6]
+        release_version = row[5]
 
         response = {
             "status_code": 200,
@@ -370,11 +370,11 @@ def get_session_version():
             "result": release_version
         }
 
-        if row[7]:
-            response["name"] = row[7]
+        if row[6]:
+            response["name"] = row[6]
 
-        if row[8]:
-            response["notes"] = row[8]
+        if row[7]:
+            response["notes"] = row[7]
 
         # Add release assets
         cur.execute(
@@ -409,18 +409,18 @@ def get_session_version():
         row = cur.fetchone()
         if row is not None:
             prerelease_id = row[0]
-            prerelease_version = row[6]
+            prerelease_version = row[5]
 
             response["prerelease"] = {
                 "result": prerelease_version,
                 "updated": updated,
             }
 
+            if row[6]:
+                response["prerelease"]["name"] = row[6]
+                
             if row[7]:
-                response["prerelease"]["name"] = row[7]
-
-            if row[8]:
-                response["prerelease"]["notes"] = row[8]
+                response["prerelease"]["notes"] = row[7]
 
             # Add prerelease assets
             cur.execute(
