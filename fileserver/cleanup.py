@@ -1,4 +1,3 @@
-from flask import current_app
 from .web import app
 from . import db
 from . import config

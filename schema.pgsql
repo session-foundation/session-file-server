@@ -53,12 +53,13 @@ CREATE VIEW versions AS
         prerelease,
         url,
         releases.name AS name,
-        notes
+        notes,
+        CASE
+            WHEN valpha IS NOT NULL THEN 'alpha'
+            WHEN prerelease THEN 'prerelease'
+            ELSE 'stable'
+        END as channel
     FROM releases JOIN projects ON releases.project = projects.id;
-
-CREATE VIEW release_versions AS SELECT * FROM versions WHERE NOT prerelease AND valpha IS NULL;
-CREATE VIEW prerelease_versions AS SELECT * FROM versions WHERE prerelease;
-CREATE VIEW alpharelease_versions AS SELECT * FROM versions WHERE valpha IS NOT NULL;
 
 -- Insert project information
 INSERT INTO projects (name) VALUES ('session-foundation/session-android');
@@ -69,7 +70,7 @@ INSERT INTO projects (name) VALUES ('session-foundation/session-desktop');
 CREATE TABLE account_version_checks (
     blinded_id varchar(66) NOT NULL,
     platform varchar(25) NOT NULL,
-    release_channel varchar(6) DEFAULT 'stable',
+    channel varchar(6) DEFAULT 'stable',
     timestamp TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
 );
 

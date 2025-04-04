@@ -143,7 +143,7 @@ def update_session_desktop_version():
 
     with db.psql.cursor() as cur:
         cur.execute(
-            "UPDATE release_versions SET version = %s, updated = NOW() WHERE project = %s",
+            "UPDATE versions SET version = %s, updated = NOW() WHERE project = %s",
             ('v1.2.3', 'session-foundation/session-desktop'),
         )
 

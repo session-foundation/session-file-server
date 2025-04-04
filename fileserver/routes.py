@@ -317,7 +317,8 @@ def get_session_version():
         return error_resp(http.NOT_FOUND)
     project = "session-foundation/session-" + platform
 
-    release_channel = request.args.get("release_channel") if request.args.get("release_channel") else 'stable'
+    # Available release channels are 'stable', 'prerelease' and 'alpha'
+    channel = request.args.get("release_channel") if request.args.get("release_channel") else 'stable'
 
     # If we were provided with auth headers then validate the authentication (if they weren't provided
     # then just continue as usual for backwards compatibility)
@@ -331,9 +332,9 @@ def get_session_version():
             with psql.transaction(), psql.cursor() as cur:
                 cur.execute(
                     """
-                    INSERT INTO account_version_checks (blinded_id, platform, release_channel, timestamp)
+                    INSERT INTO account_version_checks (blinded_id, platform, channel, timestamp)
                     VALUES (%s, %s, %s, NOW())""",
-                    (blinded_id, platform, release_channel),
+                    (blinded_id, platform, channel),
                 )
 
     with db.psql.cursor() as cur:
@@ -347,18 +348,18 @@ def get_session_version():
         updated = row[0]
 
         # Fetch the latest version
-        cur.execute(f"""
+        cur.execute("""
             SELECT id, vmajor, vminor, vpatch, valpha, version, name, notes
-            FROM {'alpha' if release_channel == 'alpha' else ''}release_versions
-            WHERE proj_name = %s
+            FROM versions
+            WHERE proj_name = %s AND channel = %s
             ORDER BY vmajor DESC, vminor DESC, vpatch DESC, valpha DESC NULLS LAST
             """,
-            (project,)
+            (project, channel)
         )
 
         row = cur.fetchone()
         if row is None:
-            app.logger.warning("{} has no releases!".format(project))
+            app.logger.warning("{} has no {} releases!".format(project, channel))
             return error_resp(http.BAD_GATEWAY)
 
         release_id = row[0]
@@ -400,8 +401,8 @@ def get_session_version():
         cur.execute(
             """
             SELECT id, vmajor, vminor, vpatch, valpha, version, name, notes
-            FROM prerelease_versions
-            WHERE proj_name = %s
+            FROM versions
+            WHERE proj_name = %s AND channel = 'prerelease'
             ORDER BY vmajor DESC, vminor DESC, vpatch DESC, valpha DESC NULLS LAST""",
             (project,),
         )
