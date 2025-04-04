@@ -69,7 +69,7 @@ INSERT INTO projects (name) VALUES ('session-foundation/session-desktop');
 CREATE TABLE account_version_checks (
     blinded_id varchar(66) NOT NULL,
     platform varchar(25) NOT NULL,
-    release_channel varchar(6) DEFAULT 'latest',
+    release_channel varchar(6) DEFAULT 'stable',
     timestamp TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
 );
 

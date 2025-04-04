@@ -317,7 +317,7 @@ def get_session_version():
         return error_resp(http.NOT_FOUND)
     project = "session-foundation/session-" + platform
 
-    release_channel = request.args.get("release_channel") if request.args.get("release_channel") else 'latest'
+    release_channel = request.args.get("release_channel") if request.args.get("release_channel") else 'stable'
 
     # If we were provided with auth headers then validate the authentication (if they weren't provided
     # then just continue as usual for backwards compatibility)
