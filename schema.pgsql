@@ -31,7 +31,7 @@ CREATE TABLE releases (
     vminor SMALLINT NOT NULL,
     vpatch SMALLINT NOT NULL,
     valpha SMALLINT,
-    UNIQUE(project, vmajor, vminor, vpatch, valpha)
+    UNIQUE NULLS NOT DISTINCT (project, vmajor, vminor, vpatch, valpha)
 );
 
 CREATE TABLE release_assets (
@@ -70,7 +70,7 @@ INSERT INTO projects (name) VALUES ('session-foundation/session-desktop');
 CREATE TABLE account_version_checks (
     blinded_id varchar(66) NOT NULL,
     platform varchar(25) NOT NULL,
-    channel varchar(6) DEFAULT 'stable',
+    channel varchar(25) NOT NULL DEFAULT 'stable',
     timestamp TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
 );
 

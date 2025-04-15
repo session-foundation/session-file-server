@@ -318,7 +318,7 @@ def get_session_version():
     project = "session-foundation/session-" + platform
 
     # Available release channels are 'stable', 'prerelease' and 'alpha'
-    channel = request.args.get("release_channel") if request.args.get("release_channel") else 'stable'
+    channel = request.args.get("release_channel", "stable")
 
     # If we were provided with auth headers then validate the authentication (if they weren't provided
     # then just continue as usual for backwards compatibility)
