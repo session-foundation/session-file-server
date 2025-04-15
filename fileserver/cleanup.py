@@ -1,4 +1,3 @@
-from flask import current_app
 from .web import app
 from . import db
 from . import config
@@ -44,7 +43,7 @@ def periodic(signum):
                     # If the latest release doesn't have version information then don't bother continuing
                     # this means something is invalid, or we were rate limited
                     if 'tag_name' not in latest:
-                        app.logger.warn(
+                        app.logger.warning(
                             f"'tag_name' key not found in latest release for project {project}"
                         )
                         continue
@@ -56,23 +55,23 @@ def periodic(signum):
                     with psql.transaction():
                         for release in recent:
                             v = release["tag_name"]
-                            vresult = re.match(r'v?(\d{1,3})\.(\d{1,3})\.(\d{1,3})$', v)
+                            vresult = re.match(r'v?(\d{1,3})\.(\d{1,3})\.(\d{1,3})(?:-(alpha|beta)\.(\d+))?$', v)
                             if not vresult:
-                                app.logger.warn(
-                                    f"Unknown {project} tag does not look like a x.y.z version: {v}'"
+                                app.logger.warning(
+                                    f"Unknown {project} tag does not look like a x.y.z or x.y.z-alpha.b version: {v}'"
                                 )
                                 continue
-                            vcode = (
-                                1000000 * int(vresult.group(1))
-                                + 1000 * int(vresult.group(2))
-                                + int(vresult.group(3))
-                            )
+
+                            vmajor = int(vresult.group(1))
+                            vminor = int(vresult.group(2))
+                            vpatch = int(vresult.group(3))
+                            valpha = int(vresult.group(5)) if vresult.group(4) == 'alpha' and vresult.group(5) else None
 
                             cur.execute(
                                 """
-                                INSERT INTO releases (project, prerelease, version_code, url, name, notes)
-                                VALUES (%s, %s, %s, %s, %s, %s)
-                                ON CONFLICT(project, version_code) DO UPDATE SET
+                                INSERT INTO releases (project, prerelease, vmajor, vminor, vpatch, valpha, url, name, notes)
+                                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                                ON CONFLICT(project, vmajor, vminor, vpatch, valpha) DO UPDATE SET
                                     prerelease = EXCLUDED.prerelease,
                                     url = EXCLUDED.url,
                                     name = EXCLUDED.name,
@@ -86,7 +85,10 @@ def periodic(signum):
                                 (
                                     projid,
                                     bool(release.get("prerelease")),
-                                    vcode,
+                                    vmajor,
+                                    vminor,
+                                    vpatch,
+                                    valpha,
                                     release.get("html_url"),
                                     release.get("name"),
                                     release.get("body"),

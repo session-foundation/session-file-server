@@ -162,7 +162,7 @@ def submit_file(*, body=None, deprecated=False):
         body = request.data
 
     if not 0 < len(body) <= config.MAX_FILE_SIZE:
-        app.logger.warn(
+        app.logger.warning(
             "Rejecting upload of size {} ∉ (0, {}]".format(len(body), config.MAX_FILE_SIZE)
         )
         return error_resp(http.PAYLOAD_TOO_LARGE)
@@ -242,12 +242,12 @@ def submit_file(*, body=None, deprecated=False):
 def submit_file_old():
     input = request.json
     if input is None or "file" not in input:
-        app.logger.warn("Invalid request: did not find json with a 'file' property")
+        app.logger.warning("Invalid request: did not find json with a 'file' property")
         return error_resp(http.BAD_REQUEST)
 
     body = input["file"]
     if not 0 < len(body) <= config.MAX_FILE_SIZE_B64:
-        app.logger.warn(
+        app.logger.warning(
             "Rejecting upload of b64-encoded size {} ∉ (0, {}]".format(
                 len(body), config.MAX_FILE_SIZE_B64
             )
@@ -272,7 +272,7 @@ def get_file(id):
             response.headers.set("Content-Type", "application/octet-stream")
             return response
         else:
-            app.logger.warn("File '{}' does not exist".format(id))
+            app.logger.warning("File '{}' does not exist".format(id))
             return error_resp(http.NOT_FOUND)
 
 
@@ -287,7 +287,7 @@ def get_file_old(id):
         if row:
             return json_resp({"status_code": 200, "result": utils.encode_base64(row[0])})
         else:
-            app.logger.warn("File '{}' does not exist".format(id))
+            app.logger.warning("File '{}' does not exist".format(id))
             return error_resp(http.NOT_FOUND)
 
 
@@ -304,7 +304,7 @@ def get_file_info(id):
                 {"size": row[0], "uploaded": row[1].timestamp(), "expires": row[2].timestamp()}
             )
         else:
-            app.logger.warn("File '{}' does not exist".format(id))
+            app.logger.warning("File '{}' does not exist".format(id))
             return error_resp(http.NOT_FOUND)
 
 
@@ -313,9 +313,12 @@ def get_session_version():
     platform = request.args.get("platform")
 
     if platform not in ("desktop", "android", "ios"):
-        app.logger.warn("Invalid session platform '{}'".format(platform))
+        app.logger.warning("Invalid session platform '{}'".format(platform))
         return error_resp(http.NOT_FOUND)
     project = "session-foundation/session-" + platform
+
+    # Available release channels are 'stable', 'prerelease' and 'alpha'
+    channel = request.args.get("release_channel", "stable")
 
     # If we were provided with auth headers then validate the authentication (if they weren't provided
     # then just continue as usual for backwards compatibility)
@@ -329,47 +332,50 @@ def get_session_version():
             with psql.transaction(), psql.cursor() as cur:
                 cur.execute(
                     """
-                    INSERT INTO account_version_checks (blinded_id, platform, timestamp)
-                    VALUES (%s, %s, NOW())""",
-                    (blinded_id, platform),
+                    INSERT INTO account_version_checks (blinded_id, platform, channel, timestamp)
+                    VALUES (%s, %s, %s, NOW())""",
+                    (blinded_id, platform, channel),
                 )
 
     with db.psql.cursor() as cur:
         # Validate the project exists and retrieve when it was last updated
-        cur.execute("SELECT updated from projects WHERE name = %s", (project,),)
-
+        cur.execute("SELECT updated FROM projects WHERE name = %s", (project,),)
         row = cur.fetchone()
         if row is None:
-            app.logger.warn("{} does not exist!".format(project))
+            app.logger.warning("{} does not exist!".format(project))
             return error_resp(http.BAD_GATEWAY)
 
         updated = row[0]
 
-        # Fetch the latest release version
-        cur.execute(
-            """
-            SELECT id, version, name, notes from release_versions
-            WHERE proj_name = %s ORDER BY version_code DESC""",
-            (project,),
+        # Fetch the latest version
+        cur.execute("""
+            SELECT id, vmajor, vminor, vpatch, valpha, version, name, notes
+            FROM versions
+            WHERE proj_name = %s AND channel = %s
+            ORDER BY vmajor DESC, vminor DESC, vpatch DESC, valpha DESC NULLS LAST
+            """,
+            (project, channel)
         )
 
         row = cur.fetchone()
         if row is None:
-            app.logger.warn("{} has no releases!".format(project))
+            app.logger.warning("{} has no {} releases!".format(project, channel))
             return error_resp(http.BAD_GATEWAY)
 
         release_id = row[0]
+        release_version = row[5]
+
         response = {
             "status_code": 200,
             "updated": updated,
-            "result": row[1]
+            "result": release_version
         }
 
-        if row[2]:
-            response["name"] = row[2]
+        if row[6]:
+            response["name"] = row[6]
 
-        if row[3]:
-            response["notes"] = row[3]
+        if row[7]:
+            response["notes"] = row[7]
 
         # Add release assets
         cur.execute(
@@ -388,30 +394,34 @@ def get_session_version():
                     "name": asset[0],
                     "url": asset[1]
                 })
-                
+
             response["assets"] = asset_info
 
         # Add prerelease info if present
         cur.execute(
             """
-            SELECT id, version, name, notes from prerelease_versions
-            WHERE proj_name = %s ORDER BY version_code DESC""",
+            SELECT id, vmajor, vminor, vpatch, valpha, version, name, notes
+            FROM versions
+            WHERE proj_name = %s AND channel = 'prerelease'
+            ORDER BY vmajor DESC, vminor DESC, vpatch DESC, valpha DESC NULLS LAST""",
             (project,),
         )
 
         row = cur.fetchone()
         if row is not None:
             prerelease_id = row[0]
+            prerelease_version = row[5]
+
             response["prerelease"] = {
-                "result": row[1],
+                "result": prerelease_version,
                 "updated": updated,
             }
 
-            if row[2]:
-                response["prerelease"]["name"] = row[2]
+            if row[6]:
+                response["prerelease"]["name"] = row[6]
 
-            if row[3]:
-                response["prerelease"]["notes"] = row[3]
+            if row[7]:
+                response["prerelease"]["notes"] = row[7]
 
             # Add prerelease assets
             cur.execute(
@@ -430,7 +440,7 @@ def get_session_version():
                         "name": asset[0],
                         "url": asset[1]
                     })
-                    
+
                 response["prerelease"]["assets"] = asset_info
 
         return json_resp(response)
@@ -456,7 +466,7 @@ def get_token_info():
         )
         stats = cur.fetchone()
         if stats is None:
-            app.logger.warn("No token stats available!")
+            app.logger.warning("No token stats available!")
             return error_resp(http.BAD_GATEWAY)
 
         cur.execute(

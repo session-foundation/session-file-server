@@ -24,11 +24,14 @@ CREATE TABLE releases (
     id BIGSERIAL PRIMARY KEY,
     project BIGINT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
     prerelease BOOLEAN NOT NULL DEFAULT FALSE,
-    version_code BIGINT NOT NULL,
     url varchar(255) NOT NULL,
     name varchar(255),
     notes text,
-    UNIQUE(project, version_code)
+    vmajor SMALLINT NOT NULL,
+    vminor SMALLINT NOT NULL,
+    vpatch SMALLINT NOT NULL,
+    valpha SMALLINT,
+    UNIQUE NULLS NOT DISTINCT (project, vmajor, vminor, vpatch, valpha)
 );
 
 CREATE TABLE release_assets (
@@ -40,28 +43,34 @@ CREATE INDEX ON release_assets(release);
 
 CREATE VIEW versions AS
     SELECT
-        releases.id as id,
-        projects.name as proj_name,
-        version_code,
-        version_code / 1000000 || '.' || version_code % 1000000 / 1000 || '.' || version_code % 1000 AS version,
+        releases.id AS id,
+        projects.name AS proj_name,
+        vmajor,
+        vminor,
+        vpatch,
+        valpha,
+        vmajor || '.' || vminor || '.' || vpatch || (CASE WHEN valpha IS NOT NULL THEN '-alpha.' || valpha ELSE '' END) AS version,
         prerelease,
         url,
         releases.name AS name,
-        notes
+        notes,
+        CASE
+            WHEN valpha IS NOT NULL THEN 'alpha'
+            WHEN prerelease THEN 'prerelease'
+            ELSE 'stable'
+        END as channel
     FROM releases JOIN projects ON releases.project = projects.id;
 
-CREATE VIEW release_versions AS SELECT * FROM versions WHERE NOT prerelease;
-CREATE VIEW prerelease_versions AS SELECT * FROM versions WHERE prerelease;
-
 -- Insert project information
-INSERT INTO projects (name) VALUES ('oxen-io/session-desktop');
-INSERT INTO projects (name) VALUES ('oxen-io/session-android');
-INSERT INTO projects (name) VALUES ('oxen-io/session-ios');
+INSERT INTO projects (name) VALUES ('session-foundation/session-android');
+INSERT INTO projects (name) VALUES ('session-foundation/session-ios');
+INSERT INTO projects (name) VALUES ('session-foundation/session-desktop');
 
 -- Account Versioning
 CREATE TABLE account_version_checks (
     blinded_id varchar(66) NOT NULL,
     platform varchar(25) NOT NULL,
+    channel varchar(25) NOT NULL DEFAULT 'stable',
     timestamp TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
 );
 
