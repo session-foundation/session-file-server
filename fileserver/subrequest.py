@@ -81,9 +81,12 @@ def make_subrequest(
         with app.request_context(subreq_env):
             response = app.full_dispatch_request()
         if response.status_code != http.OK:
-            app.logger.warning(
-                f"Sub-request for {method} {path} returned status {response.status_code}"
-            )
+            if response.status_code != http.NOT_FOUND:
+                app.logger.warning(
+                    f"Sub-request for {method} {path} returned status {response.status_code}"
+                )
+            else:
+                app.logger.debug(f"Sub-request for {method} {path} returned not found")
         return response, {
             k.lower(): v
             for k, v in response.get_wsgi_headers(subreq_env)
