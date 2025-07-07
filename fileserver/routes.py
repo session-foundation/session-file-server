@@ -1,7 +1,6 @@
 from . import config
 from .web import app
-from . import db
-from . import http, utils
+from . import db, http, utils, files
 
 import flask
 from flask import request, abort, Response
@@ -10,7 +9,7 @@ from base64 import urlsafe_b64encode
 from hashlib import blake2b
 import json
 from decimal import Decimal
-from datetime import datetime
+from datetime import datetime, timezone
 import psycopg
 import time
 import nacl
@@ -25,6 +24,7 @@ if config.BACKWARDS_COMPAT_IDS:
     )
     BACKWARDS_COMPAT_RANDOM_BITS = 53 - len(config.BACKWARDS_COMPAT_IDS_FIXED_BITS)
 
+
 class CustomEncoder(json.JSONEncoder):
     def default(self, obj):
         if isinstance(obj, Decimal):
@@ -33,9 +33,12 @@ class CustomEncoder(json.JSONEncoder):
             return obj.timestamp()
         return super(CustomEncoder, self).default(obj)
 
+
 def json_resp(data, status=200):
     """Takes data and optionally an HTTP status, returns it as a json response."""
-    return flask.Response(json.dumps(data, cls=CustomEncoder), status=status, mimetype="application/json")
+    return flask.Response(
+        json.dumps(data, cls=CustomEncoder), status=status, mimetype="application/json"
+    )
 
 
 def error_resp(code):
@@ -49,12 +52,13 @@ def error_resp(code):
 def generate_file_id(data):
     """
     Generate a file ID by blake2b hashing the file body, then using a 33-byte digest encoded into 44
-    base64 chars.  (Ideally would be 32, but that would result in base64 padding, so increased to 33
+    base64url chars.  (Ideally would be 32, but that would result in base64 padding, so increased to 33
     to fit perfectly).
     """
     return urlsafe_b64encode(
         blake2b(data, digest_size=33, salt=b"SessionFileSvr\0\0").digest()
     ).decode()
+
 
 def abort_with_reason(code, msg, warn=True):
     if warn:
@@ -62,6 +66,7 @@ def abort_with_reason(code, msg, warn=True):
     else:
         app.logger.debug(msg)
     abort(Response(msg, status=code, mimetype='text/plain'))
+
 
 def valid_blinded_version_id_for_auth(request, required):
     """
@@ -77,7 +82,9 @@ def valid_blinded_version_id_for_auth(request, required):
     if missing:
         if required or missing < 3:
             abort_with_reason(
-                http.BAD_REQUEST, "Invalid authentication: one or more X-FS-* auth headers is missing")
+                http.BAD_REQUEST,
+                "Invalid authentication: one or more X-FS-* auth headers is missing",
+            )
         else:
             return None
 
@@ -129,11 +136,7 @@ def valid_blinded_version_id_for_auth(request, required):
 
     # Signature should be on:
     #     TIMESTAMP || METHOD || PATH
-    to_verify = (
-        ts_str.encode()
-        + request.method.encode()
-        + request.path.encode()
-    )
+    to_verify = ts_str.encode() + request.method.encode() + request.path.encode()
 
     # Work around flask deficiency: we can't use request.full_path above because it *adds* a `?`
     # even if there wasn't one in the original request.  So work around it by only appending if
@@ -169,6 +172,7 @@ def submit_file(*, body=None, deprecated=False):
 
     id = None
     try:
+        new_file = True
         if config.BACKWARDS_COMPAT_IDS:
             done = False
             for attempt in range(25):
@@ -176,27 +180,17 @@ def submit_file(*, body=None, deprecated=False):
                 id = BACKWARDS_COMPAT_MSB << BACKWARDS_COMPAT_RANDOM_BITS | secrets.randbits(
                     BACKWARDS_COMPAT_RANDOM_BITS
                 )
+                id_str = str(id)
                 if not deprecated:
-                    id = str(id)  # New ids are always strings; legacy requests require an integer
+                    id = id_str  # New ids are always strings; legacy requests require we return an integer
                 try:
                     with db.psql.cursor() as cur:
                         cur.execute(
-                            "INSERT INTO files (id, data, expiry) VALUES (%s, %s, NOW() + %s)",
-                            (id, body, config.FILE_EXPIRY),
+                            "INSERT INTO files (id, expiry) VALUES (%s, NOW() + %s)",
+                            (id_str, config.FILE_EXPIRY),
                         )
                 except psycopg.errors.UniqueViolation:
                     continue
-
-                if db.slave:
-                    try:
-                        with db.slave.cursor() as cur:
-                            cur.execute(
-                                "INSERT INTO files (id, data, expiry) VALUES (%s, %s, NOW() + %s)",
-                                (id, body, config.FILE_EXPIRY),
-                            )
-                    except psycopg.errors.Error as e:
-                        app.logger.warning(f"Failed to store file on slave: {e}")
-                        pass
 
                 done = True
                 break
@@ -209,29 +203,26 @@ def submit_file(*, body=None, deprecated=False):
 
         else:
             id = generate_file_id(body)
-            for psql in (db.psql, db.slave):
-                if not psql:
-                    continue
-
-                with psql.transaction(), psql.cursor() as cur:
-                    try:
-                        # Don't pass the data yet because we might be de-duplicating
-                        with db.psql.transaction():
-                            cur.execute(
-                                "INSERT INTO files (id, data, expiry) VALUES (%s, '', NOW() + %s)",
-                                (id, config.FILE_EXPIRY),
-                            )
-                    except psycopg.errors.UniqueViolation:
-                        # Found a duplicate id, so de-duplicate by just refreshing the expiry
+            with db.psql.transaction(), db.psql.cursor() as cur:
+                try:
+                    with db.psql.transaction():
                         cur.execute(
-                            "UPDATE files SET uploaded = NOW(), expiry = NOW() + %s WHERE id = %s",
-                            (config.FILE_EXPIRY, id),
+                            "INSERT INTO files (id, expiry) VALUES (%s, NOW() + %s)",
+                            (id, config.FILE_EXPIRY),
                         )
-                    else:
-                        cur.execute("UPDATE files SET data = %s WHERE id = %s", (body, id))
+                except psycopg.errors.UniqueViolation:
+                    # Found a duplicate id, so de-duplicate by just refreshing the expiry
+                    cur.execute(
+                        "UPDATE files SET uploaded = NOW(), expiry = NOW() + %s WHERE id = %s",
+                        (config.FILE_EXPIRY, id),
+                    )
+                    new_file = False
+
+        if new_file:
+            files.store(id, body)
 
     except Exception as e:
-        app.logger.error("Failed to insert file: {}".format(e))
+        app.logger.error("Failed to insert/store file: {}".format(e))
         return error_resp(http.INTERNAL_SERVER_ERROR)
 
     response = {"result": id, "status_code": 200} if deprecated else {"id": id}
@@ -262,50 +253,104 @@ def submit_file_old():
 @app.get("/file/<id>")
 def get_file(id):
     with db.psql.cursor() as cur:
-        cur.execute("SELECT data FROM files WHERE id = %s", (id,), binary=True)
+        # TODO: remove the `data` column once all files are stored on disk.
+        cur.execute("SELECT expiry, data FROM files WHERE id = %s", (id,), binary=True)
         row = cur.fetchone()
         if not row and config.BACKUP_TABLE is not None:
-            cur.execute(f"SELECT data FROM {config.BACKUP_TABLE} WHERE id = %s", (id,), binary=True)
+            cur.execute(
+                f"SELECT expiry, data FROM {config.BACKUP_TABLE} WHERE id = %s", (id,), binary=True
+            )
             row = cur.fetchone()
-        if row:
-            response = flask.make_response(row[0])
-            response.headers.set("Content-Type", "application/octet-stream")
-            return response
-        else:
-            app.logger.warning("File '{}' does not exist".format(id))
+
+        now = datetime.now(timezone.utc)
+        if not row or row[0] <= now:
+            app.logger.debug("File '{}' does not exist".format(id))
             return error_resp(http.NOT_FOUND)
+
+        # Transition code: non-null data is the file content, before we stored it on disk:
+        if row[1] is not None:
+            response = flask.make_response(row[1])
+        else:
+            path = files.get_file_path(id)
+            response = flask.make_response(path.read_bytes())
+
+        response.headers.set("Content-Type", "application/octet-stream")
+
+        return response
+
+        # TODO/FIXME: this won't work through onion requests, currently, because of the internal subrequest
+        # that we do for onion requests: it gives the error:
+        #   Attempted implicit sequence conversion but the response object is in direct passthrough mode.
+        # FIXME: perhaps we could detect whether we are a subrequest, and if so, do it this way but
+        # otherwise send it as-is (i.e. for future Lokinet direct access)?
+        return flask.send_file(
+            files.get_file_path(id),
+            mimetype="application/octet-stream",
+            as_attachment=True,
+            etag=False,
+            conditional=False,
+            max_age=(row[0] - now).total_seconds(),
+        )
 
 
 @app.get("/files/<id>")
 def get_file_old(id):
     with db.psql.cursor() as cur:
-        cur.execute("SELECT data FROM files WHERE id = %s", (id,), binary=True)
+        cur.execute("SELECT expiry, data FROM files WHERE id = %s", (id,), binary=True)
         row = cur.fetchone()
         if not row and config.BACKUP_TABLE is not None:
-            cur.execute(f"SELECT data FROM {config.BACKUP_TABLE} WHERE id = %s", (id,), binary=True)
+            cur.execute(
+                f"SELECT expiry, data FROM {config.BACKUP_TABLE} WHERE id = %s", (id,), binary=True
+            )
             row = cur.fetchone()
-        if row:
-            return json_resp({"status_code": 200, "result": utils.encode_base64(row[0])})
-        else:
-            app.logger.warning("File '{}' does not exist".format(id))
+
+        if not row or row[0] <= datetime.now(timezone.utc):
+            app.logger.debug("File '{}' does not exist".format(id))
             return error_resp(http.NOT_FOUND)
+
+        # Transition code: non-null data is the file content, before we stored it on disk:
+        if row[1] is not None:
+            return json_resp({"status_code": 200, "result": utils.encode_base64(row[1])})
+
+        path = files.get_file_path(id)
+        return json_resp({"status_code": 200, "result": utils.encode_base64(path.read_bytes())})
 
 
 @app.get("/file/<id>/info")
 def get_file_info(id):
     with db.psql.cursor() as cur:
-        cur.execute("SELECT length(data), uploaded, expiry FROM files WHERE id = %s", (id,))
+        cur.execute("SELECT uploaded, expiry, length(data) FROM files WHERE id = %s", (id,))
         row = cur.fetchone()
         if not row and config.BACKUP_TABLE is not None:
-            cur.execute(f"SELECT length(data), uploaded, expiry FROM {config.BACKUP_TABLE} WHERE id = %s", (id,))
-            row = cur.fetchone()
-        if row:
-            return json_resp(
-                {"size": row[0], "uploaded": row[1].timestamp(), "expires": row[2].timestamp()}
+            cur.execute(
+                f"SELECT uploaded, expiry, length(data) FROM {config.BACKUP_TABLE} WHERE id = %s",
+                (id,),
             )
-        else:
-            app.logger.warning("File '{}' does not exist".format(id))
+            row = cur.fetchone()
+
+        if row and row[1] <= datetime.now(timezone.utc):
+            row = None
+
+        size = None
+        if row:
+            # TODO: transition code with data to be removed once no files stored in db:
+            if row[2] is not None:
+                size = row[2]
+            else:
+                # NULL size means it is stored on disk:
+                try:
+                    size = files.get_file_path(id).stat().st_size
+                except FileNotFoundError:
+                    app.logger.warning(f"File {id} in database not found on disk!")
+                    row = None
+
+        if not row:
+            app.logger.debug("File '{}' does not exist".format(id))
             return error_resp(http.NOT_FOUND)
+
+        return json_resp(
+            {"size": size, "uploaded": row[0].timestamp(), "expires": row[1].timestamp()}
+        )
 
 
 @app.get("/session_version")
@@ -325,21 +370,17 @@ def get_session_version():
     blinded_id = valid_blinded_version_id_for_auth(request, False)
 
     if blinded_id is not None:
-        for psql in (db.psql, db.slave):
-            if not psql:
-                continue
-
-            with psql.transaction(), psql.cursor() as cur:
-                cur.execute(
-                    """
-                    INSERT INTO account_version_checks (blinded_id, platform, channel, timestamp)
-                    VALUES (%s, %s, %s, NOW())""",
-                    (blinded_id, platform, channel),
-                )
+        with db.psql.transaction(), db.psql.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO account_version_checks (blinded_id, platform, channel, timestamp)
+                VALUES (%s, %s, %s, NOW())""",
+                (blinded_id, platform, channel),
+            )
 
     with db.psql.cursor() as cur:
         # Validate the project exists and retrieve when it was last updated
-        cur.execute("SELECT updated FROM projects WHERE name = %s", (project,),)
+        cur.execute("SELECT updated FROM projects WHERE name = %s", (project,))
         row = cur.fetchone()
         if row is None:
             app.logger.warning("{} does not exist!".format(project))
@@ -348,13 +389,14 @@ def get_session_version():
         updated = row[0]
 
         # Fetch the latest version
-        cur.execute("""
+        cur.execute(
+            """
             SELECT id, vmajor, vminor, vpatch, valpha, version, name, notes
             FROM versions
             WHERE proj_name = %s AND channel = %s
             ORDER BY vmajor DESC, vminor DESC, vpatch DESC, valpha DESC NULLS LAST
             """,
-            (project, channel)
+            (project, channel),
         )
 
         row = cur.fetchone()
@@ -365,11 +407,7 @@ def get_session_version():
         release_id = row[0]
         release_version = row[5]
 
-        response = {
-            "status_code": 200,
-            "updated": updated,
-            "result": release_version
-        }
+        response = {"status_code": 200, "updated": updated, "result": release_version}
 
         if row[6]:
             response["name"] = row[6]
@@ -390,10 +428,7 @@ def get_session_version():
             asset_info = []
 
             for asset in assets:
-                asset_info.append({
-                    "name": asset[0],
-                    "url": asset[1]
-                })
+                asset_info.append({"name": asset[0], "url": asset[1]})
 
             response["assets"] = asset_info
 
@@ -412,10 +447,7 @@ def get_session_version():
             prerelease_id = row[0]
             prerelease_version = row[5]
 
-            response["prerelease"] = {
-                "result": prerelease_version,
-                "updated": updated,
-            }
+            response["prerelease"] = {"result": prerelease_version, "updated": updated}
 
             if row[6]:
                 response["prerelease"]["name"] = row[6]
@@ -436,14 +468,12 @@ def get_session_version():
                 asset_info = []
 
                 for asset in assets:
-                    asset_info.append({
-                        "name": asset[0],
-                        "url": asset[1]
-                    })
+                    asset_info.append({"name": asset[0], "url": asset[1]})
 
                 response["prerelease"]["assets"] = asset_info
 
         return json_resp(response)
+
 
 @app.get("/token_info")
 def get_token_info():
@@ -462,7 +492,7 @@ def get_token_info():
         cur.execute(
             """
             SELECT maximum_supply, sent_per_node, staking_reward_pool FROM session_token_stats
-            """,
+            """
         )
         stats = cur.fetchone()
         if stats is None:
@@ -474,18 +504,20 @@ def get_token_info():
             SELECT current_value, circulating_supply, total_nodes, updated FROM session_token_history
             WHERE updated >= date_trunc('day', NOW()) - INTERVAL '%s DAY'
             """,
-            (days,)
+            (days,),
         )
         rows = cur.fetchall()
         columns = ["current_value", "circulating_supply", "total_nodes", "updated"]
         history = [dict(zip(columns, row)) for row in rows]
 
-        return json_resp({
-            "status_code": 200,
-            "info": {
-                "maximum_supply": stats[0],
-                "sent_per_node": stats[1],
-                "staking_reward_pool": stats[2],
-                "history": history
+        return json_resp(
+            {
+                "status_code": 200,
+                "info": {
+                    "maximum_supply": stats[0],
+                    "sent_per_node": stats[1],
+                    "staking_reward_pool": stats[2],
+                    "history": history,
+                },
             }
-        })
+        )

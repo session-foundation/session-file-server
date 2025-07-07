@@ -37,11 +37,15 @@ FILE_EXPIRY = '3 weeks'
 pgsql_connect_opts = {"dbname": "sessionfiles"}
 
 
+# Alternate table to query for file lookups.  Primarily used for automatic files table rotation.
 BACKUP_TABLE = None
 
-# If not None then we replicate database changes into this database as well;
-# the value is as connection options dict, just like pgsql_connect_opts
-pgsql_slave = None
+# Path where file contents are stored on disk.  Within this directory are storage subdirectories:
+# - 000 through 999 when using backwards compat IDs.  These are the *last* three digits of the
+#   integer file ID (with leading 0s for IDs under 100).
+# - The first two digits of the base64 ID (which is always in the base64url dialect, i.e. using
+#   path-safe - and _ instead of the traditional + and /).
+FILE_BASE_PATH = 'files'
 
 
 # The default log level
