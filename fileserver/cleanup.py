@@ -21,10 +21,10 @@ def _expire_files():
             with db.psql.transaction():
                 cur.execute(f"DELETE FROM {t} WHERE expiry <= NOW() RETURNING id, data IS NULL")
                 for id, is_stored in cur:
+                    removed += 1
                     if is_stored:
                         p = files.get_file_path(id)
                         p.unlink(missing_ok=True)
-                        removed += 1
 
     if removed > 0:
         app.logger.info(f"Deleted {removed} expired files")
