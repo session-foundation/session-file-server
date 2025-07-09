@@ -32,6 +32,11 @@ MAX_FILE_SIZE_B64 = 8_000_000
 # use a precise unit.
 FILE_EXPIRY = '3 weeks'
 
+# Client may pass a 'X-FS-TTL' header when uploading a file specifying the file's TTL, in seconds.
+# This sets the maximum such allowable TTL (in seconds).  If None then requested TTLs will be
+# ignored.
+MAX_FILE_TTL = None
+
 
 # postgresql connect options
 pgsql_connect_opts = {"dbname": "sessionfiles"}

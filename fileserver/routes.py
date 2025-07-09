@@ -170,6 +170,17 @@ def submit_file(*, body=None, deprecated=False):
         )
         return error_resp(http.PAYLOAD_TOO_LARGE)
 
+    ttl = config.FILE_EXPIRY
+    requested_ttl = request.headers.get('X-FS-TTL') if config.MAX_FILE_TTL is not None else None
+    if requested_ttl is not None:
+        try:
+            requested_ttl = int(requested_ttl)
+        except ValueError:
+            return error_resp(http.BAD_REQUEST)
+        if requested_ttl < 0 or requested_ttl > config.MAX_FILE_TTL:
+            return error_resp(http.BAD_REQUEST)
+        ttl = f"{requested_ttl} seconds"
+
     id = None
     try:
         new_file = True
@@ -186,8 +197,7 @@ def submit_file(*, body=None, deprecated=False):
                 try:
                     with db.psql.cursor() as cur:
                         cur.execute(
-                            "INSERT INTO files (id, expiry) VALUES (%s, NOW() + %s)",
-                            (id_str, config.FILE_EXPIRY),
+                            "INSERT INTO files (id, expiry) VALUES (%s, NOW() + %s)", (id_str, ttl)
                         )
                 except psycopg.errors.UniqueViolation:
                     continue
@@ -207,14 +217,13 @@ def submit_file(*, body=None, deprecated=False):
                 try:
                     with db.psql.transaction():
                         cur.execute(
-                            "INSERT INTO files (id, expiry) VALUES (%s, NOW() + %s)",
-                            (id, config.FILE_EXPIRY),
+                            "INSERT INTO files (id, expiry) VALUES (%s, NOW() + %s)", (id, ttl)
                         )
                 except psycopg.errors.UniqueViolation:
                     # Found a duplicate id, so de-duplicate by just refreshing the expiry
                     cur.execute(
                         "UPDATE files SET uploaded = NOW(), expiry = NOW() + %s WHERE id = %s",
-                        (config.FILE_EXPIRY, id),
+                        (ttl, id),
                     )
                     new_file = False
 
