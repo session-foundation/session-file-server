@@ -283,12 +283,13 @@ def get_file(id):
             path = files.get_file_path(id)
             response = flask.make_response(path.read_bytes())
 
+        response.expires = row[0]
+
+        # TODO/FIXME:
         response.headers.set("Content-Type", "application/octet-stream")
-
         return response
-
-        # TODO/FIXME: this won't work through onion requests, currently, because of the internal subrequest
-        # that we do for onion requests: it gives the error:
+        # because the following won't work through onion requests currently because of the internal
+        # subrequest that we do for onion requests: it gives the error:
         #   Attempted implicit sequence conversion but the response object is in direct passthrough mode.
         # FIXME: perhaps we could detect whether we are a subrequest, and if so, do it this way but
         # otherwise send it as-is (i.e. for future Lokinet direct access)?
