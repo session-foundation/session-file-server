@@ -182,6 +182,7 @@ def submit_file(*, body=None, deprecated=False):
         ttl = f"{requested_ttl} seconds"
 
     id = None
+    expiry = None
     try:
         new_file = True
         if config.BACKWARDS_COMPAT_IDS:
@@ -197,8 +198,10 @@ def submit_file(*, body=None, deprecated=False):
                 try:
                     with db.psql.cursor() as cur:
                         cur.execute(
-                            "INSERT INTO files (id, expiry) VALUES (%s, NOW() + %s)", (id_str, ttl)
+                            "INSERT INTO files (id, expiry) VALUES (%s, NOW() + %s) RETURNING expiry",
+                            (id_str, ttl),
                         )
+                        expiry = cur.fetchone()[0]
                 except psycopg.errors.UniqueViolation:
                     continue
 
@@ -217,15 +220,17 @@ def submit_file(*, body=None, deprecated=False):
                 try:
                     with db.psql.transaction():
                         cur.execute(
-                            "INSERT INTO files (id, expiry) VALUES (%s, NOW() + %s)", (id, ttl)
+                            "INSERT INTO files (id, expiry) VALUES (%s, NOW() + %s) RETURNING expiry",
+                            (id, ttl),
                         )
                 except psycopg.errors.UniqueViolation:
                     # Found a duplicate id, so de-duplicate by just refreshing the expiry
                     cur.execute(
-                        "UPDATE files SET uploaded = NOW(), expiry = NOW() + %s WHERE id = %s",
+                        "UPDATE files SET uploaded = NOW(), expiry = NOW() + %s WHERE id = %s RETURNING expiry",
                         (ttl, id),
                     )
                     new_file = False
+                expiry = cur.fetchone()[0]
 
         if new_file:
             files.store(id, body)
@@ -234,7 +239,11 @@ def submit_file(*, body=None, deprecated=False):
         app.logger.error("Failed to insert/store file: {}".format(e))
         return error_resp(http.INTERNAL_SERVER_ERROR)
 
-    response = {"result": id, "status_code": 200} if deprecated else {"id": id}
+    response = (
+        {"result": id, "status_code": 200}
+        if deprecated
+        else {"id": id, "expires": expiry.timestamp()}
+    )
     return json_resp(response)
 
 
