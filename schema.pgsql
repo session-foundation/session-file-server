@@ -2,7 +2,6 @@ BEGIN;
 
 CREATE TABLE files (
     id VARCHAR(44) PRIMARY KEY CHECK(id ~ '^[a-zA-Z0-9_-]+$'),
-    data BYTEA,
     uploaded TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
     expiry TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW() + '30 days'
 );

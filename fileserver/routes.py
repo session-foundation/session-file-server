@@ -271,12 +271,11 @@ def submit_file_old():
 @app.get("/file/<id>")
 def get_file(id):
     with db.psql.cursor() as cur:
-        # TODO: remove the `data` column once all files are stored on disk.
-        cur.execute("SELECT expiry, data FROM files WHERE id = %s", (id,), binary=True)
+        cur.execute("SELECT expiry FROM files WHERE id = %s", (id,), binary=True)
         row = cur.fetchone()
         if not row and config.BACKUP_TABLE is not None:
             cur.execute(
-                f"SELECT expiry, data FROM {config.BACKUP_TABLE} WHERE id = %s", (id,), binary=True
+                f"SELECT expiry FROM {config.BACKUP_TABLE} WHERE id = %s", (id,), binary=True
             )
             row = cur.fetchone()
 
@@ -285,12 +284,8 @@ def get_file(id):
             app.logger.debug("File '{}' does not exist".format(id))
             return error_resp(http.NOT_FOUND)
 
-        # Transition code: non-null data is the file content, before we stored it on disk:
-        if row[1] is not None:
-            response = flask.make_response(row[1])
-        else:
-            path = files.get_file_path(id)
-            response = flask.make_response(path.read_bytes())
+        path = files.get_file_path(id)
+        response = flask.make_response(path.read_bytes())
 
         response.expires = row[0]
 
@@ -315,21 +310,17 @@ def get_file(id):
 @app.get("/files/<id>")
 def get_file_old(id):
     with db.psql.cursor() as cur:
-        cur.execute("SELECT expiry, data FROM files WHERE id = %s", (id,), binary=True)
+        cur.execute("SELECT expiry FROM files WHERE id = %s", (id,), binary=True)
         row = cur.fetchone()
         if not row and config.BACKUP_TABLE is not None:
             cur.execute(
-                f"SELECT expiry, data FROM {config.BACKUP_TABLE} WHERE id = %s", (id,), binary=True
+                f"SELECT expiry FROM {config.BACKUP_TABLE} WHERE id = %s", (id,), binary=True
             )
             row = cur.fetchone()
 
         if not row or row[0] <= datetime.now(timezone.utc):
             app.logger.debug("File '{}' does not exist".format(id))
             return error_resp(http.NOT_FOUND)
-
-        # Transition code: non-null data is the file content, before we stored it on disk:
-        if row[1] is not None:
-            return json_resp({"status_code": 200, "result": utils.encode_base64(row[1])})
 
         path = files.get_file_path(id)
         return json_resp({"status_code": 200, "result": utils.encode_base64(path.read_bytes())})
@@ -338,11 +329,11 @@ def get_file_old(id):
 @app.get("/file/<id>/info")
 def get_file_info(id):
     with db.psql.cursor() as cur:
-        cur.execute("SELECT uploaded, expiry, length(data) FROM files WHERE id = %s", (id,))
+        cur.execute("SELECT uploaded, expiry FROM files WHERE id = %s", (id,))
         row = cur.fetchone()
         if not row and config.BACKUP_TABLE is not None:
             cur.execute(
-                f"SELECT uploaded, expiry, length(data) FROM {config.BACKUP_TABLE} WHERE id = %s",
+                f"SELECT uploaded, expiry FROM {config.BACKUP_TABLE} WHERE id = %s",
                 (id,),
             )
             row = cur.fetchone()
@@ -352,16 +343,11 @@ def get_file_info(id):
 
         size = None
         if row:
-            # TODO: transition code with data to be removed once no files stored in db:
-            if row[2] is not None:
-                size = row[2]
-            else:
-                # NULL size means it is stored on disk:
-                try:
-                    size = files.get_file_path(id).stat().st_size
-                except FileNotFoundError:
-                    app.logger.warning(f"File {id} in database not found on disk!")
-                    row = None
+            try:
+                size = files.get_file_path(id).stat().st_size
+            except FileNotFoundError:
+                app.logger.warning(f"File {id} in database not found on disk!")
+                row = None
 
         if not row:
             app.logger.debug("File '{}' does not exist".format(id))

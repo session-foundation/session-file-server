@@ -19,12 +19,11 @@ def _expire_files():
             # (It won't break anything if the file doesn't exist on disk, but an unreferenced file
             # on disk would stay around indefinitely).
             with db.psql.transaction():
-                cur.execute(f"DELETE FROM {t} WHERE expiry <= NOW() RETURNING id, data IS NULL")
-                for id, is_stored in cur:
+                cur.execute(f"DELETE FROM {t} WHERE expiry <= NOW() RETURNING id")
+                for row in cur:
                     removed += 1
-                    if is_stored:
-                        p = files.get_file_path(id)
-                        p.unlink(missing_ok=True)
+                    p = files.get_file_path(row[0])
+                    p.unlink(missing_ok=True)
 
     if removed > 0:
         app.logger.info(f"Deleted {removed} expired files")
