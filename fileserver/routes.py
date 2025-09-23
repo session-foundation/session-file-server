@@ -358,6 +358,55 @@ def get_file_info(id):
         )
 
 
+@app.post("/file/<id>/extend")
+def extend_file_expiry(id):
+    """
+    Extend an existing file's expiry.  We accept the same X-FS-TTL header as the original upload to
+    extend by a specific value, otherwise extend by the default storage interval.
+
+    This endpoint will only extend but not reduce a file expiry (so that someone cannot prematurely
+    expire someone else's file once if know the id).
+    """
+    ttl = config.FILE_EXPIRY
+    requested_ttl = request.headers.get('X-FS-TTL') if config.MAX_FILE_TTL is not None else None
+    if requested_ttl is not None:
+        try:
+            requested_ttl = int(requested_ttl)
+        except ValueError:
+            return error_resp(http.BAD_REQUEST)
+        if requested_ttl < 0 or requested_ttl > config.MAX_FILE_TTL:
+            return error_resp(http.BAD_REQUEST)
+        ttl = f"{requested_ttl} seconds"
+
+    # Don't allow an extension of a backwards-compat ID because there is too much of a risk of
+    # collisions where it might seem like you updated, but actually it expired and someone else
+    # uploaded a file that happened to get the same ID.
+    if len(id) < 44:
+        app.logger.warning("Denying attempt to extend a backwards compat ID")
+        return error_resp(http.NOT_FOUND)
+
+    with db.psql.cursor() as cur:
+        cur.execute("UPDATE files SET expiry = GREATEST(expiry, NOW() + %s) WHERE id = %s RETURNING uploaded, expiry",
+                    (ttl, id))
+        row = cur.fetchone()
+
+        size = None
+        if row:
+            try:
+                size = files.get_file_path(id).stat().st_size
+            except FileNotFoundError:
+                app.logger.warning(f"File {id} in database not found on disk!")
+                row = None
+
+        if not row:
+            app.logger.debug("File '{}' does not exist".format(id))
+            return error_resp(http.NOT_FOUND)
+
+        return json_resp(
+                {"size": size, "uploaded": row[0].timestamp(), "expires": row[1].timestamp()}
+        )
+
+
 @app.get("/session_version")
 def get_session_version():
     platform = request.args.get("platform")
