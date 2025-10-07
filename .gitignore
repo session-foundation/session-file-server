@@ -1,5 +1,6 @@
 /fileserver/config.py
 __pycache__
+/key_ed25519
 /key_x25519
 .vscode
 .venv
