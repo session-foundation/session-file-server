@@ -21,7 +21,7 @@ def pg_connect():
 
     conninfo = config.pgsql_connect_opts.pop('conninfo', '')
     psql_pool = ConnectionPool(
-        conninfo, min_size=2, max_size=32, kwargs={**config.pgsql_connect_opts, "autocommit": True}
+        conninfo, open=True, min_size=2, max_size=32, kwargs={**config.pgsql_connect_opts, "autocommit": True}
     )
     psql_pool.wait()
 

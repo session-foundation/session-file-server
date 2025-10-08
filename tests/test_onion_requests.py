@@ -143,8 +143,12 @@ def update_session_desktop_version():
 
     with db.psql.cursor() as cur:
         cur.execute(
-            "UPDATE versions SET version = %s, updated = NOW() WHERE project = %s",
-            ('v1.2.3', 'session-foundation/session-desktop'),
+            "INSERT INTO releases (project, url, vmajor, vminor, vpatch) "
+            "VALUES ((SELECT id FROM projects WHERE name = 'session-foundation/session-desktop'),"
+            "    'https://example.org', 1, 2, 3)"
+        )
+        cur.execute(
+            "UPDATE projects SET updated = NOW() WHERE name = 'session-foundation/session-desktop'"
         )
 
 
@@ -162,7 +166,7 @@ def test_v3(client):
     v = decrypt_reply(r.data, v=3, enc_type="xchacha20")[0]
 
     assert -1 < time.time() - v.pop('updated') < 1
-    assert v == {'status_code': 200, 'result': 'v1.2.3'}
+    assert v == {'status_code': 200, 'result': '1.2.3'}
 
 
 def test_v4(client):
@@ -181,14 +185,14 @@ def test_v4(client):
 
     v = json.loads(body)
     assert -1 < time.time() - v.pop('updated') < 1
-    assert v == {'status_code': 200, 'result': 'v1.2.3'}
+    assert v == {'status_code': 200, 'result': '1.2.3'}
 
 
 @app.post("/test_v4_post_body")
 def v4_post_body():
     from flask import request, jsonify, Response
 
-    if request.json is not None:
+    if request.is_json:
         return jsonify({"json": request.json})
     print(f"rd: {request.data}")
     return Response(
