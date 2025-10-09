@@ -22,14 +22,14 @@ assert A.encode().hex() == 'd79a50b82ba8ca665f854382b42ba159efd16eef87409e97a8d0
 # For xchacha20 we use the libsodium recommended shared key of H(aB || A || B), where H(.) is
 # 32-byte Blake2B
 shared_xchacha20_key = nacl.hashlib.blake2b(
-    crypto_scalarmult(a.encode(), crypto.privkey.public_key.encode())
+    crypto_scalarmult(a.encode(), crypto.privkeys[0].public_key.encode())
     + A.encode()
-    + crypto.privkey.public_key.encode(),
+    + crypto.privkeys[0].public_key.encode(),
     digest_size=32,
 ).digest()
 
 # AES-GCM onion requests were implemented using the somewhat weaker shared key of just aB:
-shared_aes_key = crypto_scalarmult(a.encode(), crypto.privkey.public_key.encode())
+shared_aes_key = crypto_scalarmult(a.encode(), crypto.privkeys[0].public_key.encode())
 
 
 def build_payload(inner_json, inner_body=None, *, v, enc_type, outer_json_extra={}):

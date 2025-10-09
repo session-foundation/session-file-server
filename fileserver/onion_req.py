@@ -104,13 +104,16 @@ def handle_v4_onionreq_plaintext(body):
 
 
 def decrypt_onionreq():
-    try:
-        return OnionReqParser(
-            crypto.server_pubkey_bytes,
-            crypto._privkey_bytes,
-            request.data)
-    except Exception as e:
-        app.logger.warning("Failed to decrypt onion request: {}".format(e))
+    for i in range(len(crypto._server_pubkey_bytes)):
+        try:
+            return OnionReqParser(
+                crypto._server_pubkey_bytes[i],
+                crypto._server_privkey_bytes[i],
+                request.data)
+        except Exception as e:
+            pass
+
+    app.logger.warning(f"Failed to decrypt onion request (tried {len(crypto._server_pubkey_bytes)} pubkeys)")
     abort(http.BAD_REQUEST)
 
 
