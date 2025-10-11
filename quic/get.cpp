@@ -24,37 +24,15 @@ void FileStream::parse_get(oxenc::bt_dict_consumer&& d) {
 FileStream::get_req::get_req(FileStream& str, std::string id) : file_req{str} {
     fileid = std::move(id);
 
-    double upl, exp;
-    bool found = false;
-    try {
-        pg_retryable([&] {
-            pqxx::work tx{str.handler.pg_conn};
-            auto row = tx.exec(R"(
-SELECT EXTRACT(EPOCH FROM uploaded), EXTRACT(EPOCH FROM expiry)
-FROM files WHERE id = $1)",
-                               pqxx::params{fileid})
-                               .opt_row();
+    auto info = db_lookup(str.handler.pg_conn, id);
 
-            if (row) {
-                found = true;
-                std::tie(upl, exp) = row->as<double, double>();
-            }
-
-            tx.commit();
-        });
-    } catch (const pqxx::failure& e) {
-        log::error(logcat, "Failed to query files table: {}", e.what());
+    if (info) {
+        expiry = info->expiry;
+        uploaded = info->uploaded;
+        filepath = info->path;
     }
 
-    if (found) {
-        expiry = std::chrono::sys_seconds{std::chrono::seconds{static_cast<int64_t>(exp)}};
-        uploaded = std::chrono::sys_seconds{std::chrono::seconds{static_cast<int64_t>(upl)}};
-
-        if (expiry < std::chrono::system_clock::now())
-            found = false;
-    }
-
-    if (!found) {
+    if (!info) {
         if (log::get_level(accesslog) >= log::Level::info) {
             if (auto conn = str.get_conn())
                 log::info(accesslog, "GET {} NOT FOUND ({})", fileid, conn->remote());
@@ -64,8 +42,6 @@ FROM files WHERE id = $1)",
         str.close(STREAM_ERROR::not_found);
         return;
     }
-
-    filepath = id_to_path(fileid);
 }
 
 void FileStream::get_req::close() {

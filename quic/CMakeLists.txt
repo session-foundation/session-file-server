@@ -64,8 +64,8 @@ target_link_libraries(quic-files
 
 option(BUILD_TESTS "Build upload/download test programs" ON)
 if(BUILD_TESTS)
-    add_executable(quic-upload test/test-upload.cpp)
-    target_link_libraries(quic-upload PRIVATE quic-files-common)
-    add_executable(quic-download test/test-download.cpp)
-    target_link_libraries(quic-download PRIVATE quic-files-common)
+    foreach(x IN ITEMS upload download query)
+        add_executable(quic-${x} test/test-${x}.cpp)
+        target_link_libraries(quic-${x} PRIVATE quic-files-common)
+    endforeach()
 endif()

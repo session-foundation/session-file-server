@@ -8,6 +8,7 @@
 #include <oxenc/hex.h>
 #include <sodium.h>
 
+#include <chrono>
 #include <functional>
 #include <oxen/log.hpp>
 #include <oxen/log/format.hpp>
@@ -60,6 +61,48 @@ inline std::filesystem::path id_to_path(std::string_view fileid) {
 
     p /= std::filesystem::path{fileid};
     return p;
+}
+
+struct file_db_info {
+    std::chrono::sys_seconds uploaded;
+    std::chrono::sys_seconds expiry;
+    std::filesystem::path path;
+};
+
+inline std::optional<file_db_info> db_lookup(pqxx::connection& conn, std::string_view fileid) {
+    double upl, exp;
+    bool found = false;
+    try {
+        pg_retryable([&] {
+            pqxx::work tx{conn};
+            auto row = tx.exec(R"(
+SELECT EXTRACT(EPOCH FROM uploaded), EXTRACT(EPOCH FROM expiry)
+FROM files WHERE id = $1)",
+                               pqxx::params{fileid})
+                               .opt_row();
+
+            if (row) {
+                found = true;
+                std::tie(upl, exp) = row->as<double, double>();
+            }
+
+            tx.commit();
+        });
+    } catch (const pqxx::failure& e) {
+        log::error(log::Cat("files.db"), "Failed to query files table: {}", e.what());
+    }
+
+    std::optional<file_db_info> result;
+    if (found) {
+        std::chrono::sys_seconds expiry{std::chrono::seconds{static_cast<int64_t>(exp)}};
+        if (expiry >= std::chrono::system_clock::now()) {
+            auto& r = result.emplace();
+            r.expiry = expiry;
+            r.uploaded = std::chrono::sys_seconds{std::chrono::seconds{static_cast<int64_t>(upl)}};
+            r.path = id_to_path(fileid);
+        }
+    }
+    return result;
 }
 
 // Simple class that "explodes" (by calling a callback) if not "disarmed" before being

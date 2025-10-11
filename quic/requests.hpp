@@ -14,6 +14,10 @@
 #include <string_view>
 #include <variant>
 
+namespace oxen::quic {
+struct message;
+}
+
 namespace sfs {
 
 namespace quic = oxen::quic;
@@ -34,6 +38,16 @@ enum class STREAM_ERROR : uint64_t {
     too_much_data = 453,
     io_error = 480,
 };
+
+// BTRequestStream request error strings:
+namespace req_error {
+    // BAD_REQUEST means you sent something the server didn't understand:
+    static constexpr auto BAD_REQUEST = "BAD_REQUEST"sv;
+    // The server encountered some sort of internal error and cannot complete the request:
+    static constexpr auto INTERNAL_ERROR = "INTERNAL_ERROR"sv;
+    // The file to modify or query does not exist:
+    static constexpr auto NOT_FOUND = "NOT_FOUND"sv;
+}
 
 class FileStream;
 
@@ -84,9 +98,19 @@ class ReqHandler {
     uint64_t _next_fsid = 1;
     std::unordered_map<uint64_t, FileStream*> streams;
 
+    uint64_t REQ_CQE_BASE_ID = 1ULL << 63;
+
+    uint64_t _next_req_cqeid = REQ_CQE_BASE_ID;
+    std::unordered_map<uint64_t, std::function<void(io_uring_cqe* cqe)>> _req_cqe_handlers;
+
     void process_cqes();
 
     friend class FileStream;
+
+    void handle_file_info(quic::message m);
+    void handle_file_extend(quic::message m);
+    void handle_session_version(quic::message m);
+    void handle_token_info(quic::message m);
 
   public:
     ReqHandler(
@@ -210,7 +234,7 @@ class FileStream : public quic::Stream {
     class get_req : public file_req {
         // Per-stream readahead; if we drop below this of unsent data then we queue additional reads
         // until we have unsent data on the stream >= this value (or hit EOF).
-        static constexpr int64_t READAHEAD = 512*1024;
+        static constexpr int64_t READAHEAD = 512 * 1024;
 
         // current io_uring state:
         // - IO_STATE::none means there is no pending io_uring request
@@ -224,10 +248,10 @@ class FileStream : public quic::Stream {
             statx = -1,
             opening = 0,
             closing_done = -2,
-            reading = 1, // including all higher underlying values
+            reading = 1,  // including all higher underlying values
         };
 
-        struct statx statxbuf{};
+        struct statx statxbuf {};
 
         IO_STATE io_state = IO_STATE::none;
 
