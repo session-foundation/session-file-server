@@ -273,11 +273,6 @@ def get_file(id):
     with db.psql.cursor() as cur:
         cur.execute("SELECT expiry FROM files WHERE id = %s", (id,), binary=True)
         row = cur.fetchone()
-        if not row and config.BACKUP_TABLE is not None:
-            cur.execute(
-                f"SELECT expiry FROM {config.BACKUP_TABLE} WHERE id = %s", (id,), binary=True
-            )
-            row = cur.fetchone()
 
         now = datetime.now(timezone.utc)
         if not row or row[0] <= now:
@@ -312,11 +307,6 @@ def get_file_old(id):
     with db.psql.cursor() as cur:
         cur.execute("SELECT expiry FROM files WHERE id = %s", (id,), binary=True)
         row = cur.fetchone()
-        if not row and config.BACKUP_TABLE is not None:
-            cur.execute(
-                f"SELECT expiry FROM {config.BACKUP_TABLE} WHERE id = %s", (id,), binary=True
-            )
-            row = cur.fetchone()
 
         if not row or row[0] <= datetime.now(timezone.utc):
             app.logger.debug("File '{}' does not exist".format(id))
@@ -331,12 +321,6 @@ def get_file_info(id):
     with db.psql.cursor() as cur:
         cur.execute("SELECT uploaded, expiry FROM files WHERE id = %s", (id,))
         row = cur.fetchone()
-        if not row and config.BACKUP_TABLE is not None:
-            cur.execute(
-                f"SELECT uploaded, expiry FROM {config.BACKUP_TABLE} WHERE id = %s",
-                (id,),
-            )
-            row = cur.fetchone()
 
         if row and row[1] <= datetime.now(timezone.utc):
             row = None

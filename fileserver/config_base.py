@@ -42,9 +42,6 @@ MAX_FILE_TTL = None
 pgsql_connect_opts = {"dbname": "sessionfiles"}
 
 
-# Alternate table to query for file lookups.  Primarily used for automatic files table rotation.
-BACKUP_TABLE = None
-
 # Path where file contents are stored on disk.  Within this directory are storage subdirectories:
 # - 000 through 999 when using backwards compat IDs.  These are the *last* three digits of the
 #   integer file ID (with leading 0s for IDs under 100).
