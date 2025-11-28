@@ -1,12 +1,26 @@
 BEGIN;
 
+CREATE TABLE storage_pools (
+    id INTEGER PRIMARY KEY GENERATED ALWAYS AS IDENTITY,
+    -- pool path component: we look for the file contents in $(basedir)/$(name)/$(id-based-subpath)
+    name varchar(100) NOT NULL,
+    -- when inserting a file each worker rotates through all storage_pools locations that have
+    -- `active` set to distribute files across storage pools.
+    active BOOLEAN NOT NULL DEFAULT TRUE
+);
+
 CREATE TABLE files (
     id VARCHAR(44) PRIMARY KEY CHECK(id ~ '^[a-zA-Z0-9_-]+$'),
     uploaded TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
-    expiry TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW() + '30 days'
+    expiry TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW() + '30 days',
+    pool INTEGER NOT NULL REFERENCES storage_pools(id) ON DELETE CASCADE
 );
 
 CREATE INDEX files_expiry ON files(expiry);
+
+CREATE VIEW pool_files AS
+    SELECT *, (SELECT name FROM storage_pools WHERE id = pool) AS pool_name
+    FROM files;
 
 -- Session Releases
 CREATE TABLE projects (

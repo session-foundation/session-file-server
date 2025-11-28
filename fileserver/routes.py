@@ -159,6 +159,29 @@ def valid_blinded_version_id_for_auth(request, required):
     return blinded_version_id
 
 
+last_pool_fetch = 0
+active_pools = []
+last_pool_index = 0
+
+
+def choose_pool() -> tuple[int, str]:
+    global last_pool_fetch, active_pools, last_pool_index
+
+    now = time.time()
+    if not active_pools or now - last_pool_fetch > 10:
+        active_pools = []
+        last_pool_fetch = now
+        with db.psql.cursor() as cur:
+            cur.execute("SELECT id, name FROM storage_pools WHERE active ORDER BY id")
+            for id, name in cur:
+                active_pools.append((id, name))
+        if not active_pools:
+            raise RuntimeError("Error: no storage pools are active!")
+
+    last_pool_index = (last_pool_index + 1) % len(active_pools)
+    return active_pools[last_pool_index]
+
+
 @app.post("/file")
 def submit_file(*, body=None, deprecated=False):
     if body is None:
@@ -184,6 +207,8 @@ def submit_file(*, body=None, deprecated=False):
     id = None
     expiry = None
     try:
+        pool_id, pool_name = choose_pool()
+
         new_file = True
         if config.BACKWARDS_COMPAT_IDS:
             done = False
@@ -198,8 +223,8 @@ def submit_file(*, body=None, deprecated=False):
                 try:
                     with db.psql.cursor() as cur:
                         cur.execute(
-                            "INSERT INTO files (id, expiry) VALUES (%s, NOW() + %s) RETURNING expiry",
-                            (id_str, ttl),
+                            "INSERT INTO files (id, expiry, pool) VALUES (%s, NOW() + %s, %s) RETURNING expiry",
+                            (id_str, ttl, pool_id),
                         )
                         expiry = cur.fetchone()[0]
                 except psycopg.errors.UniqueViolation:
@@ -217,23 +242,36 @@ def submit_file(*, body=None, deprecated=False):
         else:
             id = generate_file_id(body)
             with db.psql.transaction(), db.psql.cursor() as cur:
-                try:
-                    with db.psql.transaction():
-                        cur.execute(
-                            "INSERT INTO files (id, expiry) VALUES (%s, NOW() + %s) RETURNING expiry",
-                            (id, ttl),
+                cur.execute(
+                    """
+                        WITH inserted_file AS (
+                            INSERT INTO files (id, expiry, pool) VALUES (%s, NOW() + %s, %s)
+                            ON CONFLICT (id) DO UPDATE SET
+                                uploaded = NOW(),
+                                expiry = GREATEST(EXCLUDED.expiry, files.expiry)
+                            RETURNING expiry, pool, (xmax = 0) AS inserted
                         )
-                except psycopg.errors.UniqueViolation:
-                    # Found a duplicate id, so de-duplicate by just refreshing the expiry
-                    cur.execute(
-                        "UPDATE files SET uploaded = NOW(), expiry = NOW() + %s WHERE id = %s RETURNING expiry",
-                        (ttl, id),
-                    )
-                    new_file = False
-                expiry = cur.fetchone()[0]
+                        SELECT
+                            i_f.expiry,
+                            i_f.inserted,
+                            CASE WHEN NOT i_f.inserted THEN
+                                (SELECT name FROM storage_pools WHERE id = i_f.pool)
+                            ELSE
+                                NULL
+                            END AS new_pool
+                        FROM inserted_file i_f
+                        """,
+                    (id, ttl, pool_id),
+                )
+                expiry, new_file, updated_pool_name = cur.fetchone()
+
+                if updated_pool_name is not None:
+                    # If this comes back non-null then we updated rather than inserted, and
+                    # so our pool name might have changed:
+                    pool_name = updated_pool_name
 
         if new_file:
-            files.store(id, body)
+            files.store(pool_name, id, body)
 
     except Exception as e:
         app.logger.error("Failed to insert/store file: {}".format(e))
@@ -271,7 +309,7 @@ def submit_file_old():
 @app.get("/file/<id>")
 def get_file(id):
     with db.psql.cursor() as cur:
-        cur.execute("SELECT expiry FROM files WHERE id = %s", (id,), binary=True)
+        cur.execute("SELECT expiry, pool_name FROM pool_files WHERE id = %s", (id,), binary=True)
         row = cur.fetchone()
 
         now = datetime.now(timezone.utc)
@@ -279,10 +317,12 @@ def get_file(id):
             app.logger.debug("File '{}' does not exist".format(id))
             return error_resp(http.NOT_FOUND)
 
-        path = files.get_file_path(id)
+        expiry, pool_name = row
+
+        path = files.get_file_path(pool_name, id)
         response = flask.make_response(path.read_bytes())
 
-        response.expires = row[0]
+        response.expires = expiry
 
         # TODO/FIXME:
         response.headers.set("Content-Type", "application/octet-stream")
@@ -293,7 +333,7 @@ def get_file(id):
         # FIXME: perhaps we could detect whether we are a subrequest, and if so, do it this way but
         # otherwise send it as-is (i.e. for future Lokinet direct access)?
         return flask.send_file(
-            files.get_file_path(id),
+            files.get_file_path(pool_name, id),
             mimetype="application/octet-stream",
             as_attachment=True,
             etag=False,
@@ -305,21 +345,21 @@ def get_file(id):
 @app.get("/files/<id>")
 def get_file_old(id):
     with db.psql.cursor() as cur:
-        cur.execute("SELECT expiry FROM files WHERE id = %s", (id,), binary=True)
+        cur.execute("SELECT expiry, pool_name FROM pool_files WHERE id = %s", (id,), binary=True)
         row = cur.fetchone()
 
         if not row or row[0] <= datetime.now(timezone.utc):
             app.logger.debug("File '{}' does not exist".format(id))
             return error_resp(http.NOT_FOUND)
 
-        path = files.get_file_path(id)
+        path = files.get_file_path(row[1], id)
         return json_resp({"status_code": 200, "result": utils.encode_base64(path.read_bytes())})
 
 
 @app.get("/file/<id>/info")
 def get_file_info(id):
     with db.psql.cursor() as cur:
-        cur.execute("SELECT uploaded, expiry FROM files WHERE id = %s", (id,))
+        cur.execute("SELECT uploaded, expiry, pool_name FROM pool_files WHERE id = %s", (id,))
         row = cur.fetchone()
 
         if row and row[1] <= datetime.now(timezone.utc):
@@ -328,7 +368,7 @@ def get_file_info(id):
         size = None
         if row:
             try:
-                size = files.get_file_path(id).stat().st_size
+                size = files.get_file_path(row[2], id).stat().st_size
             except FileNotFoundError:
                 app.logger.warning(f"File {id} in database not found on disk!")
                 row = None
@@ -349,7 +389,7 @@ def extend_file_expiry(id):
     extend by a specific value, otherwise extend by the default storage interval.
 
     This endpoint will only extend but not reduce a file expiry (so that someone cannot prematurely
-    expire someone else's file once if know the id).
+    expire someone else's file once they know the id).
     """
     ttl = config.FILE_EXPIRY
     requested_ttl = request.headers.get('X-FS-TTL') if config.MAX_FILE_TTL is not None else None
@@ -370,14 +410,21 @@ def extend_file_expiry(id):
         return error_resp(http.NOT_FOUND)
 
     with db.psql.cursor() as cur:
-        cur.execute("UPDATE files SET expiry = GREATEST(expiry, NOW() + %s) WHERE id = %s RETURNING uploaded, expiry",
-                    (ttl, id))
+        cur.execute(
+            """
+            UPDATE files SET expiry = GREATEST(expiry, NOW() + %s)
+            WHERE id = %s
+            RETURNING uploaded, expiry, (SELECT name FROM storage_pools WHERE id = files.pool)
+            """,
+            (ttl, id),
+        )
         row = cur.fetchone()
 
         size = None
         if row:
+            uploaded, expiry, pool_name = row
             try:
-                size = files.get_file_path(id).stat().st_size
+                size = files.get_file_path(pool_name, id).stat().st_size
             except FileNotFoundError:
                 app.logger.warning(f"File {id} in database not found on disk!")
                 row = None
@@ -387,7 +434,7 @@ def extend_file_expiry(id):
             return error_resp(http.NOT_FOUND)
 
         return json_resp(
-                {"size": size, "uploaded": row[0].timestamp(), "expires": row[1].timestamp()}
+            {"size": size, "uploaded": uploaded.timestamp(), "expires": expiry.timestamp()}
         )
 
 

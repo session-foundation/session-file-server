@@ -18,10 +18,15 @@ def _expire_files():
         # if the file doesn't exist on disk, but an unreferenced file on disk would stay around
         # indefinitely).
         with db.psql.transaction():
-            cur.execute(f"DELETE FROM files WHERE expiry <= NOW() RETURNING id")
+            cur.execute(
+                """
+                DELETE FROM files WHERE expiry <= NOW()
+                RETURNING id, (SELECT name FROM storage_pools WHERE id = files.pool)
+                """
+            )
             for row in cur:
                 removed += 1
-                p = files.get_file_path(row[0])
+                p = files.get_file_path(row[1], row[0])
                 p.unlink(missing_ok=True)
 
     if removed > 0:
