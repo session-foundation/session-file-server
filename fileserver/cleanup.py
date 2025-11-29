@@ -129,6 +129,8 @@ def _update_versions():
 
 @timer(5, target="worker1")
 def periodic(signum):
+    if config.DISABLE_CLEANUP:
+        return
     with app.app_context():
         _expire_files()
         _update_versions()

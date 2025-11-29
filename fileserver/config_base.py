@@ -50,5 +50,11 @@ pgsql_connect_opts = {"dbname": "sessionfiles"}
 FILE_BASE_PATH = 'files'
 
 
+# If true, this disables file cleanup & session release fetching.  Typically cleanup should be left
+# enabled, but if multiple front-end servers are sharing the same storage, this only needs to be
+# active on one of them.
+DISABLE_CLEANUP = False
+
+
 # The default log level
 log_level = logging.INFO
