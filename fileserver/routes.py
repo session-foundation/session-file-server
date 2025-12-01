@@ -136,7 +136,7 @@ def valid_blinded_version_id_for_auth(request, required):
 
     # Signature should be on:
     #     TIMESTAMP || METHOD || PATH
-    to_verify = ts_str.encode() + request.method.encode() + request.path.encode()
+    to_verify = str(ts).encode() + request.method.encode() + request.path.encode()
 
     # Work around flask deficiency: we can't use request.full_path above because it *adds* a `?`
     # even if there wasn't one in the original request.  So work around it by only appending if
