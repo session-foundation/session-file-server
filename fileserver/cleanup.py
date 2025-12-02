@@ -12,18 +12,22 @@ import requests
 def _expire_files():
     removed = 0
     with db.psql.cursor() as cur:
-        for t in ['files'] if config.BACKUP_TABLE is None else ['files', config.BACKUP_TABLE]:
-            # We do the deletion with a transaction held so that, if we fail to delete from disk
-            # (for instance, if we are killed during the deletion or get an IO error) the
-            # transaction reverts so that the IDs still exist, and we can try deleting them again.
-            # (It won't break anything if the file doesn't exist on disk, but an unreferenced file
-            # on disk would stay around indefinitely).
-            with db.psql.transaction():
-                cur.execute(f"DELETE FROM {t} WHERE expiry <= NOW() RETURNING id")
-                for row in cur:
-                    removed += 1
-                    p = files.get_file_path(row[0])
-                    p.unlink(missing_ok=True)
+        # We do the deletion with a transaction held so that, if we fail to delete from disk (for
+        # instance, if we are killed during the deletion or get an IO error) the transaction reverts
+        # so that the IDs still exist, and we can try deleting them again.  (It won't break anything
+        # if the file doesn't exist on disk, but an unreferenced file on disk would stay around
+        # indefinitely).
+        with db.psql.transaction():
+            cur.execute(
+                """
+                DELETE FROM files WHERE expiry <= NOW()
+                RETURNING id, (SELECT name FROM storage_pools WHERE id = files.pool)
+                """
+            )
+            for row in cur:
+                removed += 1
+                p = files.get_file_path(row[1], row[0])
+                p.unlink(missing_ok=True)
 
     if removed > 0:
         app.logger.info(f"Deleted {removed} expired files")
@@ -125,6 +129,8 @@ def _update_versions():
 
 @timer(5, target="worker1")
 def periodic(signum):
+    if config.DISABLE_CLEANUP:
+        return
     with app.app_context():
         _expire_files()
         _update_versions()

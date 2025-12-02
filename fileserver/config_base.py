@@ -42,15 +42,18 @@ MAX_FILE_TTL = None
 pgsql_connect_opts = {"dbname": "sessionfiles"}
 
 
-# Alternate table to query for file lookups.  Primarily used for automatic files table rotation.
-BACKUP_TABLE = None
-
 # Path where file contents are stored on disk.  Within this directory are storage subdirectories:
 # - 000 through 999 when using backwards compat IDs.  These are the *last* three digits of the
 #   integer file ID (with leading 0s for IDs under 100).
 # - The first two digits of the base64 ID (which is always in the base64url dialect, i.e. using
 #   path-safe - and _ instead of the traditional + and /).
 FILE_BASE_PATH = 'files'
+
+
+# If true, this disables file cleanup & session release fetching.  Typically cleanup should be left
+# enabled, but if multiple front-end servers are sharing the same storage, this only needs to be
+# active on one of them.
+DISABLE_CLEANUP = False
 
 
 # The default log level
