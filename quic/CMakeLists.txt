@@ -35,6 +35,7 @@ system_or_submodule(OXENQUIC quic oxen::quic liboxenquic>=1.6 oxen-libquic)
 pkg_check_modules(NLOHMANN_JSON IMPORTED_TARGET REQUIRED nlohmann_json>=3.7.0)
 pkg_check_modules(SODIUM IMPORTED_TARGET REQUIRED libsodium>=1.0.17)
 pkg_check_modules(LIBURING IMPORTED_TARGET REQUIRED liburing>=2.3)
+pkg_check_modules(LIBEVENT_CORE IMPORTED_TARGET REQUIRED libevent_core>=2.1.12)
 
 add_executable(quic-files
     quic-files.cpp
@@ -60,6 +61,7 @@ target_link_libraries(quic-files
     libpqxx::pqxx
     CLI11::CLI11
     PkgConfig::LIBURING
+    PkgConfig::LIBEVENT_CORE
 )
 
 option(BUILD_TESTS "Build upload/download test programs" ON)
