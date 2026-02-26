@@ -480,7 +480,8 @@ void ReqHandler::handle_file_extend(quic::message m) {
         } else {
             auto r = nlohmann::json::parse(body);
             r.at("id").get_to(id);
-            r.at("ttl").get_to(ttl);
+            if (auto it = r.find("ttl"); it != r.end())
+                it->get_to(ttl.emplace());
             json = true;
         }
     } catch (const std::exception& e) {
