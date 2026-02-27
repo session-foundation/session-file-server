@@ -177,7 +177,7 @@ ReqHandler::ReqHandler(
         quic::Address listen,
         std::string ed_keys,
         bool enable_0rtt,
-        std::string pgsql_uri,
+        const std::string& pgsql_uri,
         bool back_compat_ids,
         std::chrono::seconds max_ttl,
         std::filesystem::path base_path_,
@@ -185,14 +185,13 @@ ReqHandler::ReqHandler(
         back_compat_ids{back_compat_ids},
         max_ttl{max_ttl},
         max_size{max_size},
+        pg_conn{pgsql_uri},
         base_path{std::move(base_path_)} {
 
     if (sodium_init() == -1)
         throw std::runtime_error{"Failed to initialize libsodium!"};
 
     loop.call_get([&] {
-        pg_conn = pqxx::connection{pgsql_uri};
-
         refresh_pools();
 
         std::list<bomb> cleanup;

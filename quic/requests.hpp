@@ -129,7 +129,7 @@ class ReqHandler {
             quic::Address listen,
             std::string ed_keys,
             bool enable_0rtt,
-            std::string pgsql_uri,
+            const std::string& pgsql_uri,
             bool back_compat_ids,
             std::chrono::seconds max_ttl,
             std::filesystem::path base_path,
