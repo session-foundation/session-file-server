@@ -47,7 +47,7 @@ namespace req_error {
     static constexpr auto INTERNAL_ERROR = "INTERNAL_ERROR"sv;
     // The file to modify or query does not exist:
     static constexpr auto NOT_FOUND = "NOT_FOUND"sv;
-}
+}  // namespace req_error
 
 class FileStream;
 
@@ -251,7 +251,7 @@ class FileStream : public quic::Stream {
             reading = 1,  // including all higher underlying values
         };
 
-        struct statx statxbuf {};
+        struct statx statxbuf{};
 
         IO_STATE io_state = IO_STATE::none;
 
