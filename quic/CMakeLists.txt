@@ -36,6 +36,7 @@ pkg_check_modules(NLOHMANN_JSON IMPORTED_TARGET REQUIRED nlohmann_json>=3.7.0)
 pkg_check_modules(SODIUM IMPORTED_TARGET REQUIRED libsodium>=1.0.17)
 pkg_check_modules(LIBURING IMPORTED_TARGET REQUIRED liburing>=2.3)
 pkg_check_modules(LIBEVENT_CORE IMPORTED_TARGET REQUIRED libevent_core>=2.1.12)
+pkg_check_modules(SYSTEMD IMPORTED_TARGET REQUIRED libsystemd)
 
 add_library(quic-files-common common.cpp)
 target_link_libraries(quic-files-common PUBLIC
@@ -51,7 +52,6 @@ add_executable(quic-files
     put.cpp
     get.cpp
     cleanup.cpp
-    common.cpp
 )
 
 target_link_libraries(quic-files
@@ -63,6 +63,13 @@ target_link_libraries(quic-files
     CLI11::CLI11
     PkgConfig::LIBURING
     PkgConfig::LIBEVENT_CORE
+    PkgConfig::SYSTEMD
+)
+
+include(GNUInstallDirs)
+install(TARGETS quic-files
+    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+    LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
 )
 
 option(BUILD_TESTS "Build upload/download test programs" ON)

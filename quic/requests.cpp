@@ -2,6 +2,7 @@
 
 #include <event2/event.h>
 #include <sys/eventfd.h>
+#include <systemd/sd-daemon.h>
 
 #include <chrono>
 #include <concepts>
@@ -250,18 +251,36 @@ ReqHandler::ReqHandler(
         for (auto& x : cleanup)
             x.disarm();
 
-        stats_timer = loop.call_every(30s, [this] {
+        auto last_logged = std::chrono::steady_clock::now();
+        stats_timer = loop.call_every(5s, [this, last_logged]() mutable {
+            sd_notify(
+                    0,
+                    "WATCHDOG=1\nSTATUS=Running.  Requests: "
+                    "{} [{:.1f}GB] up, {} [{:.1f}GB] down, {} other"_format(
+                            overall.puts,
+                            overall.put_data / 1e9,
+                            overall.gets,
+                            overall.get_data / 1e9,
+                            overall.others)
+                            .c_str());
+
             auto now = std::chrono::steady_clock::now();
+            if (now - last_logged < 59s)
+                return;
+
+            last_logged = now;
+
             log::info(
                     logcat,
-                    "{} uploads ({:.1f}GB), {} downloads ({:.1f}GB), {} other requests in {} since "
-                    "startup.",
+                    "{} uploads ({:.1f}GB), {} downloads ({:.1f}GB), "
+                    "{} other requests in {} since startup.",
                     overall.puts,
                     overall.put_data / 1e9,
                     overall.gets,
                     overall.get_data / 1e9,
                     overall.others,
                     friendly_duration(now - overall.since));
+
             if (now - recent.since >= 10min) {
                 recent_old = recent;
                 recent = {};
@@ -269,8 +288,8 @@ ReqHandler::ReqHandler(
             if (recent_old.since > overall.since + 1s) {
                 log::info(
                         logcat,
-                        "{} uploads ({:.1f}GB), {} downloads ({:.1f}GB), {} other requests in last "
-                        "{}",
+                        "{} uploads ({:.1f}GB), {} downloads ({:.1f}GB), "
+                        "{} other requests in last {}",
                         recent.puts + recent_old.puts,
                         (recent.put_data + recent_old.put_data) / 1e9,
                         recent.gets + recent_old.gets,

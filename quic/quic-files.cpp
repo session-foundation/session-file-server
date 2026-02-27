@@ -1,4 +1,5 @@
 #include <oxenc/hex.h>
+#include <systemd/sd-daemon.h>
 
 #include <CLI/CLI.hpp>
 #include <CLI/Error.hpp>
@@ -175,6 +176,8 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
+    sd_notify(0, "STATUS=Starting");
+
     log::info(
             logcat,
             "Server Ed25519 pubkey: {}",
@@ -203,6 +206,7 @@ int main(int argc, char* argv[]) {
                 max_size};
 
         log::info(logcat, "Server started.");
+        sd_notify(0, "READY=1\nSTATUS=Server started");
 
         signalled.wait(0);
         log::warning(logcat, "Received signal {}, stopping server", signalled.load());
