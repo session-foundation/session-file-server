@@ -8,8 +8,8 @@
 namespace sfs {
 
 std::thread start_cleanup_thread(
+        const std::filesystem::path& base_dir,
         const std::string& pgsql_uri,
-        const std::filesystem::path& files_dir,
         std::future<void> stop);
 
 }

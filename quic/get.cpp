@@ -21,7 +21,7 @@ void FileStream::parse_get(oxenc::bt_dict_consumer&& d) {
     request.emplace<get_req>(*this, std::move(id));
 }
 
-FileStream::get_req::get_req(FileStream& str, std::string id) : file_req{str} {
+FileStream::get_req::get_req(FileStream& str, std::string id) : file_req{str, -1} {
     fileid = std::move(id);
 
     auto info = db_lookup(str.handler.pg_conn, id);
@@ -30,6 +30,19 @@ FileStream::get_req::get_req(FileStream& str, std::string id) : file_req{str} {
         expiry = info->expiry;
         uploaded = info->uploaded;
         filepath = info->path;
+
+        auto& pools = str.handler._pools;
+        if (auto it = std::ranges::find(pools, info->pool, &ReqHandler::file_pool::id);
+            it != pools.end()) {
+            files_dir_fd = it->files_dir_fd;
+        } else {
+            log::warning(
+                    accesslog,
+                    "GET {} returned pool {}, but that pool was not found!",
+                    fileid,
+                    info->pool);
+            info.reset();
+        }
     }
 
     if (!info) {
@@ -174,18 +187,13 @@ void FileStream::get_req::finalize() {
     auto* sqe = io_uring_get_sqe(&str.handler.iou);
     io_uring_sqe_set_data64(sqe, str.fsid);
     io_uring_sqe_set_flags(sqe, IOSQE_IO_LINK);
-    io_uring_prep_statx(sqe, str.handler.files_dir_fd, filepath.c_str(), 0, STATX_SIZE, &statxbuf);
+    io_uring_prep_statx(sqe, files_dir_fd, filepath.c_str(), 0, STATX_SIZE, &statxbuf);
 
     sqe = io_uring_get_sqe(&str.handler.iou);
     io_uring_sqe_set_data64(sqe, str.fsid);
     io_uring_sqe_set_flags(sqe, 0);
     io_uring_prep_openat_direct(
-            sqe,
-            str.handler.files_dir_fd,
-            filepath.c_str(),
-            O_RDONLY,
-            0644,
-            IORING_FILE_INDEX_ALLOC);
+            sqe, files_dir_fd, filepath.c_str(), O_RDONLY, 0644, IORING_FILE_INDEX_ALLOC);
 
     io_uring_submit(&str.handler.iou);
 }

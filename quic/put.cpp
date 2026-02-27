@@ -10,8 +10,12 @@ static auto accesslog = log::Cat("access");
 
 constexpr auto FILE_ID_HASH_KEY = "SessionFileSvr\0\0"sv;
 
-FileStream::put_req::put_req(FileStream& s, size_t size_, std::optional<int> ttl_) :
-        file_req{s}, ttl{std::move(ttl_)} {
+FileStream::put_req::put_req(
+        FileStream& s, size_t size_, std::optional<int> ttl_, const ReqHandler::file_pool& pool) :
+        file_req{s, pool.files_dir_fd},
+        ttl{std::move(ttl_)},
+        pool_id{pool.id},
+        upload_dir_fd{pool.upload_dir_fd} {
 
     size = size_;
 
@@ -53,7 +57,7 @@ void FileStream::put_req::append(std::span<const std::byte> data) {
         io_state = IO_STATE::opening;
         io_uring_prep_openat_direct(
                 sqe,
-                str.handler.upload_dir_fd,
+                upload_dir_fd,
                 tmp_upload.c_str(),
                 O_CREAT | O_EXCL | O_WRONLY,
                 0644,
@@ -239,7 +243,7 @@ void FileStream::put_req::handle_cqe(io_uring_cqe* cqe) {
             str.close(STREAM_ERROR::io_error);
         }
 
-        unlink_and_close(str.fsid);
+        unlink_and_close(str.fsid, cqe->res != 0);
         io_state = IO_STATE::closing_done;
     } else if (state == IO_STATE::closing_done) {
         if (cqe->res < 0) {
@@ -285,9 +289,10 @@ void FileStream::put_req::finalize() {
         else if (c == '/')
             c = '_';
     }
-    filepath = "{}/{}"_format(fileid.substr(0, 2), fileid);
 
-    if (str.handler.back_compat_ids) {
+    if (!str.handler.back_compat_ids)
+        filepath = std::filesystem::path{"{}/{}"_format(fileid.substr(0, 2), fileid)};
+    else {
         std::string try_ttl = "{} seconds"_format(
                 ttl && *ttl > 0 && *ttl <= str.handler.max_ttl.count()
                         ? *ttl
@@ -304,9 +309,9 @@ void FileStream::put_req::finalize() {
                 pg_retryable([&] {
                     pqxx::work tx{str.handler.pg_conn};
                     std::tie(upl, exp) = tx.exec(R"(
-INSERT INTO files (id, expiry) VALUES ($1, NOW() + $2)
+INSERT INTO files (id, expiry, pool) VALUES ($1, NOW() + $2, $3)
 RETURNING EXTRACT(EPOCH FROM uploaded), EXTRACT(EPOCH FROM expiry))",
-                                                 pqxx::params{try_id, try_ttl})
+                                                 pqxx::params{try_id, try_ttl, pool_id})
                                                  .one_row()
                                                  .as<double, double>();
                     tx.commit();
@@ -316,7 +321,7 @@ RETURNING EXTRACT(EPOCH FROM uploaded), EXTRACT(EPOCH FROM expiry))",
             }
             success = true;
             fileid = std::move(try_id);
-            filepath = "{:03d}/{}"_format(bcid % 1000, fileid);
+            filepath = std::filesystem::path{"{:03d}/{}"_format(bcid % 1000, fileid)};
             expiry = std::chrono::sys_seconds{std::chrono::seconds{static_cast<int64_t>(exp)}};
             uploaded = std::chrono::sys_seconds{std::chrono::seconds{static_cast<int64_t>(upl)}};
         }
@@ -342,7 +347,8 @@ void FileStream::put_req::initiate_rename() {
 
     log::debug(
             logcat,
-            "All data received; renaming tempfile #{} ({}) to final location {}",
+            "All data received; renaming pool {} tempfile #{} ({}) to final location {}",
+            pool_id,
             fd,
             tmp_upload,
             filepath);
@@ -351,9 +357,9 @@ void FileStream::put_req::initiate_rename() {
     io_uring_sqe_set_data64(sqe, str.fsid);
     io_uring_prep_renameat(
             sqe,
-            str.handler.upload_dir_fd,
+            upload_dir_fd,
             tmp_upload.c_str(),
-            str.handler.files_dir_fd,
+            files_dir_fd,
             filepath.c_str(),
             RENAME_NOREPLACE);
     io_uring_submit(&str.handler.iou);
@@ -371,16 +377,35 @@ void FileStream::put_req::insert_and_respond() {
             pg_retryable([&] {
                 pqxx::work tx{str.handler.pg_conn};
 
-                auto [upl, exp] = tx.exec(R"(
-INSERT INTO files (id, expiry) VALUES ($1, NOW() + $2)
+                auto [upl, exp, pool] = tx.exec(R"(
+INSERT INTO files (id, expiry, pool) VALUES ($1, NOW() + $2, $3)
 ON CONFLICT(id) DO UPDATE SET expiry = GREATEST(files.expiry, EXCLUDED.expiry)
-RETURNING EXTRACT(EPOCH FROM uploaded), EXTRACT(EPOCH FROM expiry))",
-                                          pqxx::params{fileid, db_ttl})
-                                          .one_row()
-                                          .as<double, double>();
+RETURNING EXTRACT(EPOCH FROM uploaded), EXTRACT(EPOCH FROM expiry), pool)",
+                                                pqxx::params{fileid, db_ttl, pool_id})
+                                                .one_row()
+                                                .as<double, double, int>();
                 uploaded =
                         std::chrono::sys_seconds{std::chrono::seconds{static_cast<int64_t>(upl)}};
                 expiry = std::chrono::sys_seconds{std::chrono::seconds{static_cast<int64_t>(exp)}};
+                if (pool != pool_id) {
+                    // The insert conflicts with a file in a different storage pool, and so we
+                    // updated the expiry date of that other file, but still have the file that we
+                    // moved into *our* pool, which is no longer referenced and so we need to delete
+                    // it.
+                    log::debug(
+                            logcat,
+                            "Deleting de-duplicated upload {} from pool {}"
+                            " (file is already in pool {})",
+                            filepath,
+                            pool_id,
+                            pool);
+                    auto* sqe = io_uring_get_sqe(&str.handler.iou);
+                    io_uring_sqe_set_flags(sqe, IOSQE_CQE_SKIP_SUCCESS);
+                    io_uring_sqe_set_data64(sqe, 0);  // tell cqe handler to ignore the result
+                    io_uring_prep_unlinkat(sqe, files_dir_fd, filepath.c_str(), 0);
+                    io_uring_submit(&str.handler.iou);
+                }
+
                 tx.commit();
             });
         } catch (const pqxx::failure& e) {
@@ -401,15 +426,17 @@ RETURNING EXTRACT(EPOCH FROM uploaded), EXTRACT(EPOCH FROM expiry))",
     str.handler.overall.put(size);
 }
 
-void FileStream::put_req::unlink_and_close(uint64_t close_fsid) {
+void FileStream::put_req::unlink_and_close(uint64_t close_fsid, bool unlink) {
     auto* sqe = io_uring_get_sqe(&str.handler.iou);
 
-    io_uring_sqe_set_flags(sqe, IOSQE_CQE_SKIP_SUCCESS);
-    io_uring_sqe_set_data64(sqe, 0);  // we can't do anything if this fails so 0 will just be
-                                      // ignored by the cqe handling
-    io_uring_prep_unlinkat(sqe, str.handler.upload_dir_fd, tmp_upload.c_str(), 0);
+    if (unlink) {
+        io_uring_sqe_set_flags(sqe, IOSQE_CQE_SKIP_SUCCESS);
+        io_uring_sqe_set_data64(sqe, 0);  // we can't do anything if this fails so 0 will just be
+                                          // ignored by the cqe handling
+        io_uring_prep_unlinkat(sqe, upload_dir_fd, tmp_upload.c_str(), 0);
 
-    sqe = io_uring_get_sqe(&str.handler.iou);
+        sqe = io_uring_get_sqe(&str.handler.iou);
+    }
     io_uring_sqe_set_data64(sqe, close_fsid);
     if (close_fsid == 0)
         // Without an fsid we don't care about the outcome, so can skip handling entirely.  If we
@@ -449,7 +476,9 @@ void FileStream::parse_put(oxenc::bt_dict_consumer&& d) {
         return;
     }
 
-    auto& put = request.emplace<put_req>(*this, std::move(size), std::move(ttl));
+    const auto& pool = handler.choose_pool();
+
+    auto& put = request.emplace<put_req>(*this, std::move(size), std::move(ttl), pool);
     if (log::get_level(accesslog) >= log::Level::info) {
         auto ttl = put.ttl ? " (ttl={})"_format(*put.ttl) : "";
         if (auto conn = get_conn())

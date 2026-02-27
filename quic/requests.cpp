@@ -179,12 +179,12 @@ ReqHandler::ReqHandler(
         std::string pgsql_uri,
         bool back_compat_ids,
         std::chrono::seconds max_ttl,
-        std::filesystem::path files_path_,
+        std::filesystem::path base_path_,
         int64_t max_size) :
         back_compat_ids{back_compat_ids},
         max_ttl{max_ttl},
         max_size{max_size},
-        files_path{std::move(files_path_)} {
+        base_path{std::move(base_path_)} {
 
     if (sodium_init() == -1)
         throw std::runtime_error{"Failed to initialize libsodium!"};
@@ -192,26 +192,9 @@ ReqHandler::ReqHandler(
     loop.call_get([&] {
         pg_conn = pqxx::connection{pgsql_uri};
 
+        refresh_pools();
+
         std::list<bomb> cleanup;
-
-        std::filesystem::create_directories(files_path);
-
-        if (back_compat_ids)
-            for (int i = 0; i < 1000; i++)
-                std::filesystem::create_directories(files_path / "{:03d}"_format(i));
-        else {
-            for (auto a : b64_url_chars)
-                for (auto b : b64_url_chars)
-                    std::filesystem::create_directories(files_path / "{}{}"_format(a, b));
-        }
-        upload_path = files_path / "uploads";
-        std::filesystem::create_directories(upload_path);
-
-        upload_dir_fd = open(upload_path.c_str(), O_PATH | O_DIRECTORY);
-        if (upload_dir_fd < 0)
-            throw std::runtime_error{
-                    "Unable to open upload path {}: {}"_format(upload_path, strerror(errno))};
-        cleanup.emplace_back([this] { close(upload_dir_fd); });
 
         if (int err = io_uring_queue_init(128, &iou, IORING_SETUP_SINGLE_ISSUER); err != 0)
             throw std::runtime_error{
@@ -222,12 +205,6 @@ ReqHandler::ReqHandler(
             throw std::runtime_error{
                     "Failed to initialize io_uring file descriptors: {}"_format(strerror(-err))};
         cleanup.emplace_front([this] { io_uring_unregister_files(&iou); });
-
-        files_dir_fd = open(files_path.c_str(), O_PATH | O_DIRECTORY);
-        if (files_dir_fd < 0)
-            throw std::runtime_error{
-                    "Unable to open files path {}: {}"_format(files_path, strerror(errno))};
-        cleanup.emplace_back([this] { close(files_dir_fd); });
 
         iou_evfd = eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
         if (iou_evfd < 0)
@@ -408,7 +385,6 @@ void ReqHandler::handle_file_info(quic::message m) {
     bool json = false;
     try {
         auto body = m.body();
-        log::critical(logcat, "BODY: {}", body);
         if (body.starts_with("d")) {
             oxenc::bt_dict_consumer r{body};
             id = r.require<std::string>("#");
@@ -423,6 +399,14 @@ void ReqHandler::handle_file_info(quic::message m) {
     }
 
     auto info = db_lookup(pg_conn, id);
+    int pool_files_fd = -1;
+    if (info) {
+        if (auto it = std::ranges::find(_pools, info->pool, &file_pool::id); it != _pools.end())
+            pool_files_fd = it->files_dir_fd;
+        else
+            info.reset();
+    }
+
     if (!info) {
         send_error(m, req_error::NOT_FOUND, json);
         return;
@@ -433,7 +417,7 @@ void ReqHandler::handle_file_info(quic::message m) {
     auto rid = _next_req_cqeid++;
     io_uring_sqe_set_data64(sqe, rid);
     io_uring_sqe_set_flags(sqe, 0);
-    io_uring_prep_statx(sqe, files_dir_fd, info->path.c_str(), 0, STATX_SIZE, statxbuf.get());
+    io_uring_prep_statx(sqe, pool_files_fd, info->path.c_str(), 0, STATX_SIZE, statxbuf.get());
     io_uring_submit(&iou);
 
     _req_cqe_handlers[rid] = [id = std::move(id),
@@ -529,6 +513,137 @@ RETURNING EXTRACT(EPOCH FROM uploaded), EXTRACT(EPOCH FROM expiry))",
         res.append("x", uploaded.time_since_epoch().count());
         m.respond(std::move(res).str());
     }
+}
+
+void ReqHandler::refresh_pools() {
+    auto pool_open = [bc = back_compat_ids](file_pool& p) {
+        auto upload_path = p.files_path / "uploads";
+        std::filesystem::create_directories(upload_path);
+        if (bc)
+            for (int i = 0; i < 1000; i++)
+                std::filesystem::create_directories(p.files_path / "{:03d}"_format(i));
+        else
+            for (auto a : b64_url_chars)
+                for (auto b : b64_url_chars)
+                    std::filesystem::create_directories(p.files_path / "{}{}"_format(a, b));
+
+        p.upload_dir_fd = open(upload_path.c_str(), O_PATH | O_DIRECTORY);
+        if (p.upload_dir_fd < 0)
+            throw std::runtime_error{
+                    "Unable to open pool upload path {}: {}"_format(upload_path, strerror(errno))};
+
+        p.files_dir_fd = open(p.files_path.c_str(), O_PATH | O_DIRECTORY);
+        if (p.files_dir_fd < 0) {
+            close(p.upload_dir_fd);
+            throw std::runtime_error{
+                    "Unable to open pool base path {}: {}"_format(p.files_path, strerror(errno))};
+        }
+    };
+
+    bool active_changed = false;
+
+    pqxx::work tx{pg_conn};
+    for (auto [id, name, active] : tx.query<int, std::string, bool>(
+                 "SELECT id, name, active FROM storage_pools ORDER BY id")) {
+        auto pool_path = base_path / std::filesystem::path{name};
+
+        if (auto it = std::ranges::find(_pools, id, &file_pool::id); it != _pools.end()) {
+            auto& p = *it;
+            if (pool_path != p.files_path) {
+                // The pool path changed, but we can't close the previous directory file
+                // descriptors because they might still be in use, so we just replace them
+                // without closing the old ones.  This isn't ideal but changing pool paths
+                // should be extremely rare.
+                std::swap(p.files_path, pool_path);
+                try {
+                    pool_open(p);
+                    log::warning(
+                            logcat,
+                            "Pool {} path changed from {} to {}; this will leak two file "
+                            "descriptors until restart",
+                            id,
+                            pool_path,
+                            p.files_path);
+                } catch (const std::exception& e) {
+                    log::error(
+                            logcat,
+                            "Failed to configure changed pool path {} (changed from {}): {}",
+                            p.files_path,
+                            pool_path,
+                            e.what());
+                    // Leave it at the old value so that we can try again the next time we
+                    // refresh:
+                    std::swap(p.files_path, pool_path);
+                    // Regardless of the actual active status, we do not want to put new
+                    // uploads into a stale entry:
+                    active = false;
+                }
+            }
+
+            // active just means its active for new uploads, so flipping it on or off
+            // doesn't require us to reopen anything
+            if (p.active != active) {
+                p.active = active;
+                active_changed = true;
+                log::info(
+                        logcat,
+                        "Pool {} ({}) is now {}",
+                        p.id,
+                        p.files_path,
+                        p.active ? "active" : "inactive");
+            }
+        } else {
+            auto& p = _pools.emplace_back();
+            p.id = id;
+            p.files_path = std::move(pool_path);
+            p.active = active;
+
+            try {
+                pool_open(p);
+            } catch (const std::exception& e) {
+                log::error(
+                        logcat,
+                        "Failed to setup upload-{} pool ({} @ {}): {}",
+                        active ? "active" : "inactive",
+                        p.id,
+                        p.files_path,
+                        e.what());
+                _pools.pop_back();
+                continue;
+            }
+            log::info(
+                    logcat,
+                    "Pool {} ({}) is loaded {}",
+                    p.id,
+                    p.files_path,
+                    active ? "and active" : "but inactive for new uploads");
+            if (active)
+                active_changed = true;
+        }
+    }
+
+    if (active_changed) {
+        _active_pools_index.clear();
+        for (int i = 0; i < _pools.size(); i++)
+            if (_pools[i].active)
+                _active_pools_index.push_back(i);
+        _last_pool_index %= _active_pools_index.size();
+    }
+
+    if (_active_pools_index.empty())
+        throw std::runtime_error{"File server has no active pools!"};
+}
+
+const ReqHandler::file_pool& ReqHandler::choose_pool() {
+    auto now = std::chrono::steady_clock::now();
+    if (_pools.empty() || _pools_refresh_at <= now) {
+        refresh_pools();
+        _pools_refresh_at = now + 30s;
+    }
+
+    ++_last_pool_index %= _active_pools_index.size();
+
+    return _pools[_active_pools_index[_last_pool_index]];
 }
 
 }  // namespace sfs

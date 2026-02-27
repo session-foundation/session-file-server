@@ -79,11 +79,7 @@ class ReqHandler {
     req_stats recent{}, recent_old{};
     std::shared_ptr<quic::Ticker> stats_timer;
 
-    std::filesystem::path files_path;
-    std::filesystem::path upload_path;
-    int files_dir_fd;
-    int upload_dir_fd;
-
+    std::filesystem::path base_path;
     io_uring iou;
     int iou_evfd;
     event* iou_ev;
@@ -105,6 +101,22 @@ class ReqHandler {
 
     void process_cqes();
 
+    struct file_pool {
+        int id;
+        bool active;
+        std::filesystem::path files_path;
+        int files_dir_fd;
+        int upload_dir_fd;
+    };
+    std::vector<file_pool> _pools;
+    std::vector<int> _active_pools_index;
+
+    std::chrono::steady_clock::time_point _pools_refresh_at =
+            std::chrono::steady_clock::now() - 24h;
+    int _last_pool_index = -1;
+    void refresh_pools();
+    const file_pool& choose_pool();
+
     friend class FileStream;
 
     void handle_file_info(quic::message m);
@@ -120,7 +132,7 @@ class ReqHandler {
             std::string pgsql_uri,
             bool back_compat_ids,
             std::chrono::seconds max_ttl,
-            std::filesystem::path files_path,
+            std::filesystem::path base_path,
             int64_t max_size);
 
     ~ReqHandler();
@@ -211,12 +223,14 @@ class FileStream : public quic::Stream {
         // We queue reads and writes in blocks of this size
         static constexpr int64_t CHUNK_SIZE = 64 * 1024;
 
-        file_req(FileStream& str) : str{str} {}
+        file_req(FileStream& str, int pool_dir_fd) : str{str}, files_dir_fd{pool_dir_fd} {}
 
         FileStream& str;
 
+        // The open storage pool base directory fd relative to which the file is read or written
         int fd = -1;
 
+        int files_dir_fd;
         std::filesystem::path filepath;
         std::chrono::sys_seconds uploaded;
         std::chrono::sys_seconds expiry;
@@ -295,6 +309,12 @@ class FileStream : public quic::Stream {
 
         IO_STATE io_state = IO_STATE::none;
 
+        // The upload directory fd for the storage pool we are uploading into
+        int upload_dir_fd;
+        // The storage pool id, determined when the upload starts and inserted into the db when it
+        // finishes.
+        int pool_id;
+
         // When waiting on a write, this is how many bytes we tried writing
         int io_write_size;
         // In some cases (such as a partial write) we end up starting a write with an offset into
@@ -311,14 +331,17 @@ class FileStream : public quic::Stream {
 
         void insert_and_respond();
 
-        void unlink_and_close(uint64_t close_fsid);
+        void unlink_and_close(uint64_t close_fsid, bool unlink = true);
 
         friend class ReqHandler;
 
       public:
         std::optional<int> ttl;
 
-        put_req(FileStream& s, size_t size, std::optional<int> ttl);
+        put_req(FileStream& s,
+                size_t size,
+                std::optional<int> ttl,
+                const ReqHandler::file_pool& pool);
 
         // Appends data; the first time this is called a temporary file is opened into which the
         // data will be written.  Throws upon I/O error.

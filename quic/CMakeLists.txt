@@ -37,20 +37,21 @@ pkg_check_modules(SODIUM IMPORTED_TARGET REQUIRED libsodium>=1.0.17)
 pkg_check_modules(LIBURING IMPORTED_TARGET REQUIRED liburing>=2.3)
 pkg_check_modules(LIBEVENT_CORE IMPORTED_TARGET REQUIRED libevent_core>=2.1.12)
 
+add_library(quic-files-common common.cpp)
+target_link_libraries(quic-files-common PUBLIC
+    oxenc::oxenc
+    oxen::logging
+    oxen::quic
+    fmt::fmt
+)
+
 add_executable(quic-files
     quic-files.cpp
     requests.cpp
     put.cpp
     get.cpp
     cleanup.cpp
-)
-
-add_library(quic-files-common INTERFACE)
-target_link_libraries(quic-files-common INTERFACE
-    oxenc::oxenc
-    oxen::logging
-    oxen::quic
-    fmt::fmt
+    common.cpp
 )
 
 target_link_libraries(quic-files

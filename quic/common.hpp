@@ -50,14 +50,13 @@ static void pg_retryable(Call c, const int n_retries = 10) {
     }
 }
 
+// Returns the relative path within the storage pool directory to a file with the given id
 inline std::filesystem::path id_to_path(std::string_view fileid) {
-    std::filesystem::path p;
-    if (fileid.size() == 44)
-        p = std::filesystem::path{fileid.substr(0, 2)};
-    else
-        // back compat numeric identifier, goes into 000, 001, ..., 999 based on % 1000 id value
-        p = std::filesystem::path{
-                "{:0>3s}"_format(fileid.substr(fileid.size() < 3 ? 0 : fileid.size() - 3))};
+    std::filesystem::path p{
+            fileid.size() == 44 ? fileid.substr(0, 2) :
+                                // back compat numeric identifier, goes into 000, 001, ..., 999
+                                // based on % 1000 id value:
+                    "{:0>3s}"_format(fileid.substr(fileid.size() < 3 ? 0 : fileid.size() - 3))};
 
     p /= std::filesystem::path{fileid};
     return p;
@@ -66,44 +65,11 @@ inline std::filesystem::path id_to_path(std::string_view fileid) {
 struct file_db_info {
     std::chrono::sys_seconds uploaded;
     std::chrono::sys_seconds expiry;
+    int pool;
     std::filesystem::path path;
 };
 
-inline std::optional<file_db_info> db_lookup(pqxx::connection& conn, std::string_view fileid) {
-    double upl, exp;
-    bool found = false;
-    try {
-        pg_retryable([&] {
-            pqxx::work tx{conn};
-            auto row = tx.exec(R"(
-SELECT EXTRACT(EPOCH FROM uploaded), EXTRACT(EPOCH FROM expiry)
-FROM files WHERE id = $1)",
-                               pqxx::params{fileid})
-                               .opt_row();
-
-            if (row) {
-                found = true;
-                std::tie(upl, exp) = row->as<double, double>();
-            }
-
-            tx.commit();
-        });
-    } catch (const pqxx::failure& e) {
-        log::error(log::Cat("files.db"), "Failed to query files table: {}", e.what());
-    }
-
-    std::optional<file_db_info> result;
-    if (found) {
-        std::chrono::sys_seconds expiry{std::chrono::seconds{static_cast<int64_t>(exp)}};
-        if (expiry >= std::chrono::system_clock::now()) {
-            auto& r = result.emplace();
-            r.expiry = expiry;
-            r.uploaded = std::chrono::sys_seconds{std::chrono::seconds{static_cast<int64_t>(upl)}};
-            r.path = id_to_path(fileid);
-        }
-    }
-    return result;
-}
+std::optional<file_db_info> db_lookup(pqxx::connection& conn, std::string_view fileid);
 
 // Simple class that "explodes" (by calling a callback) if not "disarmed" before being
 // destructed.  Used to queue cleanup during partial construction.
@@ -119,42 +85,7 @@ class bomb {
     }
 };
 
-inline std::string friendly_duration(std::chrono::nanoseconds dur) {
-    std::string friendly;
-    auto append = std::back_inserter(friendly);
-    bool some = false;
-    if (dur >= 24h) {
-        fmt::format_to(append, "{}d", dur / 24h);
-        dur %= 24h;
-        some = true;
-    }
-    if (dur >= 1h || some) {
-        fmt::format_to(append, "{}h", dur / 1h);
-        dur %= 1h;
-        some = true;
-    }
-    if (dur >= 1min || some) {
-        fmt::format_to(append, "{}m", dur / 1min);
-        dur %= 1min;
-        some = true;
-    }
-    if (some || dur % 1s == 0ns) {
-        // If we have >= minutes or its an integer number of seconds then don't bother with
-        // fractional seconds
-        fmt::format_to(append, "{}s", dur / 1s);
-    } else {
-        double seconds = std::chrono::duration<double>(dur).count();
-        if (dur >= 1s)
-            fmt::format_to(append, "{:.3f}s", seconds);
-        else if (dur >= 1ms)
-            fmt::format_to(append, "{:.3f}ms", seconds * 1000);
-        else if (dur >= 1us)
-            fmt::format_to(append, "{:.3f}µs", seconds * 1'000'000);
-        else
-            fmt::format_to(append, "{:.0f}ns", seconds * 1'000'000'000);
-    }
-    return friendly;
-}
+std::string friendly_duration(std::chrono::nanoseconds dur);
 
 // NOLINTEND(misc-unused-alias-decls)
 

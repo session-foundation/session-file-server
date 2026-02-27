@@ -64,11 +64,12 @@ int main(int argc, char* argv[]) {
             ->type_name("URI")
             ->required();
 
-    std::filesystem::path file_path;
+    std::filesystem::path base_path;
     cli.add_option(
-               "--files,-f",
-               file_path,
-               "Directory where files referenced in the database are stored on disk")
+               "--base-dir,-d",
+               base_path,
+               "Base directory containing the storage pool subdirectories, within which files "
+               "referenced in the database are stored on disk")
             ->type_name("DIRECTORY")
             ->required();
 
@@ -188,7 +189,7 @@ int main(int argc, char* argv[]) {
     std::thread cleanup_thread;
     std::promise<void> stop_cleanup;
     if (!no_delete_expired)
-        cleanup_thread = sfs::start_cleanup_thread(pgsql_uri, file_path, stop_cleanup.get_future());
+        cleanup_thread = sfs::start_cleanup_thread(base_path, pgsql_uri, stop_cleanup.get_future());
 
     try {
         sfs::ReqHandler handler{
@@ -198,7 +199,7 @@ int main(int argc, char* argv[]) {
                 std::move(pgsql_uri),
                 back_compat_ids,
                 std::chrono::seconds{max_ttl},
-                file_path,
+                base_path,
                 max_size};
 
         log::info(logcat, "Server started.");
