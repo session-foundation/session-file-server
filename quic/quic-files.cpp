@@ -20,16 +20,31 @@
 #include "cleanup.hpp"
 #include "requests.hpp"
 
+using namespace std::literals;
+using namespace oxen::log::literals;
+
 std::atomic<int> signalled = 0;
 void handle_signal(int sig) {
     signalled = sig;
 }
 
+std::optional<std::string_view> get_env(std::string_view key) {
+    if (const char* val = std::getenv(key.data()))
+        return std::string_view{val};
+    return std::nullopt;
+}
+
+std::string default_config_path() {
+    if (auto xdg_home = get_env("XDG_CONFIG_HOME"))
+        return "{}/quic-files/config"_format(*xdg_home);
+    if (auto home = get_env("HOME"))
+        return "{}/.config/quic-files/config"_format(*home);
+    return ""s;
+}
+
 int main(int argc, char* argv[]) {
 
     using namespace oxen;
-    using namespace log::literals;
-    using namespace std::literals;
 
     std::signal(SIGINT, handle_signal);
     std::signal(SIGTERM, handle_signal);
@@ -37,6 +52,8 @@ int main(int argc, char* argv[]) {
     auto logcat = log::Cat("files");
 
     CLI::App cli{"Session QUIC file server"};
+
+    cli.set_config("--config", default_config_path(), "Read config options from file", false);
 
     std::string pgsql_uri;
     cli.add_option(
@@ -93,7 +110,7 @@ int main(int argc, char* argv[]) {
             ->required();
 
     std::string addr{":11235"};
-    cli.add_option("--bind,-b", addr, "Bind address for incoming oxen-libQUIC connections")
+    cli.add_option("--bind,-b", addr, "Bind address for incoming quic connections")
             ->type_name("IP:PORT")
             ->capture_default_str()
             ->check([](const std::string& a) {
