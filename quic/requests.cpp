@@ -321,6 +321,10 @@ void ReqHandler::process_cqes() {
         auto id = io_uring_cqe_get_data64(cqe);
         if (id < REQ_CQE_BASE_ID) {
             FileStream* sptr = nullptr;
+            if (id == 0) {
+                log::trace(logcat, "Untracked CQE (fsid=0) -- ignoring.");
+                continue;
+            }
             if (auto it = streams.find(id); it != streams.end())
                 sptr = it->second;
             if (!sptr) {

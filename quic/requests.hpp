@@ -295,14 +295,16 @@ class FileStream : public quic::Stream {
         // - >= IO_STATE::writing means we are writing the first N buffers of `chunks`, where N
         //   is the underlying value.
         // - IO_STATE::opening means we are creating the tempfile
-        // - IO_STATE::renaming means we are renaming the tempfile into its final location
-        // - IO_STATE::closing_done means we are closing the file handle after success.
-        // - IO_STATE::unlink_err means we aborted with an error (and closed/unlinked the tempfile)
+        // - IO_STATE::rename_* means we are doing the fsync/close/renameat sequence to move the
+        //   tempfile into its final location
         // Tracking the currently scheduled I/O task:
         enum class IO_STATE : int {
             none = -100,
-            closing_done = -2,
-            renaming = -1,
+            // Rename consists of fsync, close, renameat, and these three states track our progress
+            // through that chain:
+            rename_fsync = -1,
+            rename_close = -2,
+            rename_at = -3,
             opening = 0,
             writing = 1,  // >= writing means a writev of the underlying number of chunks
         };
@@ -331,7 +333,9 @@ class FileStream : public quic::Stream {
 
         void insert_and_respond();
 
-        void unlink_and_close(uint64_t close_fsid, bool unlink = true);
+        // Called upon error to close (if still open) the tempfile and then unlink it.  These are
+        // submitted without a fsid, i.e. there is no event emitted when these complete.
+        void abort_tempfile();
 
         friend class ReqHandler;
 

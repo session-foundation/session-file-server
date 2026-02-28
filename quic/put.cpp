@@ -152,9 +152,8 @@ void FileStream::put_req::send_chunks(std::optional<size_t> _retry_offset) {
 void FileStream::put_req::handle_cqe(io_uring_cqe* cqe) {
     assert(io_state != IO_STATE::none);
 
-    auto state = io_state;
-    if (state != IO_STATE::closing_done)  // closing_done is a "final" state we don't want to reset
-        io_state = IO_STATE::none;
+    const auto state = io_state;
+    io_state = IO_STATE::none;
 
     if (str.is_closing()) {
         log::debug(logcat, "Ignoring CQE on closing stream");
@@ -227,13 +226,45 @@ void FileStream::put_req::handle_cqe(io_uring_cqe* cqe) {
         log::debug(logcat, "Successfully wrote {}B to tempfile #{}", written, fd);
         chunks.erase(chunks.begin(), chunks.begin() + n_bufs);
         send_chunks();
-    } else if (state == IO_STATE::renaming) {
-        if (cqe->res == -EEXIST || cqe->res == 0) {
-            if (cqe->res == -EEXIST)
-                log::debug(logcat, "Rename failed: upload file already exists! Deleting tempfile");
-            else
-                log::debug(logcat, "Tempfile successfully renamed to final location {}", filepath);
-        } else {
+    } else if (state == IO_STATE::rename_fsync) {
+        if (cqe->res != 0) {
+            log::warning(
+                    logcat, "Failed to fsync tempfile {}: {}", tmp_upload, strerror(-cqe->res));
+            str.close(STREAM_ERROR::io_error);
+            abort_tempfile();
+            return;
+        }
+        log::debug(logcat, "tempfile {} fsync success; closing", tmp_upload);
+
+        auto* sqe = io_uring_get_sqe(&str.handler.iou);
+        io_uring_prep_close_direct(sqe, fd);
+        io_uring_sqe_set_data64(sqe, str.fsid);
+        io_uring_submit(&str.handler.iou);
+        fd = -1;  // We've just sent the close, so we're done with this fd.
+        io_state = IO_STATE::rename_close;
+    } else if (state == IO_STATE::rename_close) {
+        if (cqe->res != 0) {
+            log::warning(
+                    logcat, "Failed to close tempfile {}: {}", tmp_upload, strerror(-cqe->res));
+            str.close(STREAM_ERROR::io_error);
+            abort_tempfile();
+            return;
+        }
+        log::debug(logcat, "tempfile {} closed; renaming", tmp_upload);
+
+        auto* sqe = io_uring_get_sqe(&str.handler.iou);
+        io_uring_prep_renameat(
+                sqe,
+                upload_dir_fd,
+                tmp_upload.c_str(),
+                files_dir_fd,
+                filepath.c_str(),
+                RENAME_NOREPLACE);
+        io_uring_sqe_set_data64(sqe, str.fsid);
+        io_uring_submit(&str.handler.iou);
+        io_state = IO_STATE::rename_at;
+    } else if (state == IO_STATE::rename_at) {
+        if (!(cqe->res == 0 || cqe->res == -EEXIST)) {
             log::warning(
                     logcat,
                     "Failed to rename tempfile {} to final location {}: {}",
@@ -241,17 +272,25 @@ void FileStream::put_req::handle_cqe(io_uring_cqe* cqe) {
                     filepath,
                     strerror(-cqe->res));
             str.close(STREAM_ERROR::io_error);
+            abort_tempfile();
+            return;
         }
 
-        unlink_and_close(str.fsid, cqe->res != 0);
-        io_state = IO_STATE::closing_done;
-    } else if (state == IO_STATE::closing_done) {
-        if (cqe->res < 0) {
-            log::warning(logcat, "Failed to close tempfile: {}", strerror(-cqe->res));
-            str.close(STREAM_ERROR::io_error);
-        }
-        // Respond anyway because the rename succeeded and such a close failure is probably
-        // something weird or spurious?
+        if (cqe->res == -EEXIST) {
+            log::debug(
+                    logcat,
+                    "Rename failed: upload file already exists! Deleting tempfile, and responding");
+            abort_tempfile();
+            // DON'T return early here: we still want to insert_and_respond because this means there
+            // is a duplicate (either pre-existing, or a race with another identical upload), and so
+            // the upload actually was successful, but we still need to delete the (duplicate)
+            // tempfile.
+        } else
+            log::debug(
+                    logcat,
+                    "Tempfile successfully renamed to final location {}, responding",
+                    filepath);
+
         insert_and_respond();
     } else {
         assert(!"Unknown state!");
@@ -347,7 +386,7 @@ void FileStream::put_req::initiate_rename() {
 
     log::debug(
             logcat,
-            "All data received; renaming pool {} tempfile #{} ({}) to final location {}",
+            "All data received; initiating renaming pool {} tempfile #{} ({}) to final location {}",
             pool_id,
             fd,
             tmp_upload,
@@ -355,15 +394,11 @@ void FileStream::put_req::initiate_rename() {
 
     auto* sqe = io_uring_get_sqe(&str.handler.iou);
     io_uring_sqe_set_data64(sqe, str.fsid);
-    io_uring_prep_renameat(
-            sqe,
-            upload_dir_fd,
-            tmp_upload.c_str(),
-            files_dir_fd,
-            filepath.c_str(),
-            RENAME_NOREPLACE);
+    io_uring_sqe_set_flags(sqe, IOSQE_FIXED_FILE);
+    io_uring_prep_fsync(sqe, fd, 0);
     io_uring_submit(&str.handler.iou);
-    io_state = IO_STATE::renaming;
+
+    io_state = IO_STATE::rename_fsync;
 }
 
 void FileStream::put_req::insert_and_respond() {
@@ -388,13 +423,13 @@ RETURNING EXTRACT(EPOCH FROM uploaded), EXTRACT(EPOCH FROM expiry), pool)",
                         std::chrono::sys_seconds{std::chrono::seconds{static_cast<int64_t>(upl)}};
                 expiry = std::chrono::sys_seconds{std::chrono::seconds{static_cast<int64_t>(exp)}};
                 if (pool != pool_id) {
-                    // The insert conflicts with a file in a different storage pool, and so we
-                    // updated the expiry date of that other file, but still have the file that we
-                    // moved into *our* pool, which is no longer referenced and so we need to delete
-                    // it.
+                    // The insert conflicts with a file in a *different* storage pool, and so we
+                    // just updated the expiry date of that other file, but still have the file that
+                    // we uploaded into *this* pool, which is not referenced by the db (because of
+                    // the above failure) and so we need to delete it.
                     log::debug(
                             logcat,
-                            "Deleting de-duplicated upload {} from pool {}"
+                            "Deleting duplicated upload {} from pool {}"
                             " (file is already in pool {})",
                             filepath,
                             pool_id,
@@ -426,27 +461,21 @@ RETURNING EXTRACT(EPOCH FROM uploaded), EXTRACT(EPOCH FROM expiry), pool)",
     str.handler.overall.put(size);
 }
 
-void FileStream::put_req::unlink_and_close(uint64_t close_fsid, bool unlink) {
-    auto* sqe = io_uring_get_sqe(&str.handler.iou);
-
-    if (unlink) {
-        io_uring_sqe_set_flags(sqe, IOSQE_CQE_SKIP_SUCCESS);
-        io_uring_sqe_set_data64(sqe, 0);  // we can't do anything if this fails so 0 will just be
-                                          // ignored by the cqe handling
-        io_uring_prep_unlinkat(sqe, upload_dir_fd, tmp_upload.c_str(), 0);
-
-        sqe = io_uring_get_sqe(&str.handler.iou);
+void FileStream::put_req::abort_tempfile() {
+    if (fd >= 0) {
+        auto* sqe = io_uring_get_sqe(&str.handler.iou);
+        io_uring_sqe_set_flags(sqe, IOSQE_CQE_SKIP_SUCCESS | IOSQE_IO_LINK);
+        io_uring_sqe_set_data64(sqe, 0);
+        io_uring_prep_close_direct(sqe, fd);
+        fd = -1;
     }
-    io_uring_sqe_set_data64(sqe, close_fsid);
-    if (close_fsid == 0)
-        // Without an fsid we don't care about the outcome, so can skip handling entirely.  If we
-        // *do* have an fsid then we want it so that it triggers whatever happens after closing.
-        io_uring_sqe_set_flags(sqe, IOSQE_CQE_SKIP_SUCCESS);
-    io_uring_prep_close_direct(sqe, fd);
+
+    auto* sqe = io_uring_get_sqe(&str.handler.iou);
+    io_uring_sqe_set_flags(sqe, IOSQE_CQE_SKIP_SUCCESS);
+    io_uring_sqe_set_data64(sqe, 0);
+    io_uring_prep_unlinkat(sqe, upload_dir_fd, tmp_upload.c_str(), 0);
 
     io_uring_submit(&str.handler.iou);
-
-    fd = -1;
 }
 
 FileStream::put_req::~put_req() {
@@ -463,7 +492,7 @@ FileStream::put_req::~put_req() {
     }
 
     if (fd >= 0)
-        unlink_and_close(0 /* don't care about results, since we're destructing */);
+        abort_tempfile();
 }
 
 void FileStream::parse_put(oxenc::bt_dict_consumer&& d) {
