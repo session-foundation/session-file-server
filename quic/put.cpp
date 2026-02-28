@@ -319,10 +319,9 @@ void FileStream::put_req::finalize() {
     if (!str.handler.back_compat_ids)
         filepath = std::filesystem::path{"{}/{}"_format(fileid.substr(0, 2), fileid)};
     else {
-        std::string try_ttl = "{} seconds"_format(
-                ttl && *ttl > 0 && *ttl <= str.handler.max_ttl.count()
-                        ? *ttl
-                        : str.handler.max_ttl.count());
+        int max_ttl = str.handler.max_ttl.count();
+        std::string db_ttl =
+                "{} seconds"_format(std::clamp(ttl.value_or(max_ttl), MIN_TTL, max_ttl));
         bool success = false;
         for (int i = 0; !success && i < 25; i++) {
             uint64_t bcid;
@@ -337,7 +336,7 @@ void FileStream::put_req::finalize() {
                     std::tie(upl, exp) = tx.exec(R"(
 INSERT INTO files (id, expiry, pool) VALUES ($1, NOW() + $2, $3)
 RETURNING EXTRACT(EPOCH FROM uploaded), EXTRACT(EPOCH FROM expiry))",
-                                                 pqxx::params{try_id, try_ttl, pool_id})
+                                                 pqxx::params{try_id, db_ttl, pool_id})
                                                  .one_row()
                                                  .as<double, double>();
                     tx.commit();
