@@ -297,6 +297,8 @@ class FileStream : public quic::Stream {
         // - IO_STATE::opening means we are creating the tempfile
         // - IO_STATE::rename_* means we are doing the fsync/close/renameat sequence to move the
         //   tempfile into its final location
+        // - IO_STATE::cleanup_sleep is used when we failed the insert because of (rare) collision
+        //   with the same file with the cleanup thread.
         // Tracking the currently scheduled I/O task:
         enum class IO_STATE : int {
             none = -100,
@@ -305,6 +307,7 @@ class FileStream : public quic::Stream {
             rename_fsync = -1,
             rename_close = -2,
             rename_at = -3,
+            cleanup_sleep = -4,
             opening = 0,
             writing = 1,  // >= writing means a writev of the underlying number of chunks
         };
@@ -328,10 +331,12 @@ class FileStream : public quic::Stream {
         int64_t received = 0;
         bool got_all = false;
         std::filesystem::path tmp_upload;
+        __kernel_timespec cleanup_sleep;
 
         void initiate_rename();
 
-        void insert_and_respond();
+        void insert_file();
+        void respond();
 
         // Called upon error to close (if still open) the tempfile and then unlink it.  These are
         // submitted without a fsid, i.e. there is no event emitted when these complete.

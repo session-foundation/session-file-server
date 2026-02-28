@@ -9,6 +9,7 @@ static auto logcat = log::Cat("files.put");
 static auto accesslog = log::Cat("access");
 
 constexpr auto FILE_ID_HASH_KEY = "SessionFileSvr\0\0"sv;
+constexpr int MIN_TTL = 30;
 
 FileStream::put_req::put_req(
         FileStream& s, size_t size_, std::optional<int> ttl_, const ReqHandler::file_pool& pool) :
@@ -254,17 +255,12 @@ void FileStream::put_req::handle_cqe(io_uring_cqe* cqe) {
 
         auto* sqe = io_uring_get_sqe(&str.handler.iou);
         io_uring_prep_renameat(
-                sqe,
-                upload_dir_fd,
-                tmp_upload.c_str(),
-                files_dir_fd,
-                filepath.c_str(),
-                RENAME_NOREPLACE);
+                sqe, upload_dir_fd, tmp_upload.c_str(), files_dir_fd, filepath.c_str(), 0);
         io_uring_sqe_set_data64(sqe, str.fsid);
         io_uring_submit(&str.handler.iou);
         io_state = IO_STATE::rename_at;
     } else if (state == IO_STATE::rename_at) {
-        if (!(cqe->res == 0 || cqe->res == -EEXIST)) {
+        if (cqe->res != 0) {
             log::warning(
                     logcat,
                     "Failed to rename tempfile {} to final location {}: {}",
@@ -276,22 +272,13 @@ void FileStream::put_req::handle_cqe(io_uring_cqe* cqe) {
             return;
         }
 
-        if (cqe->res == -EEXIST) {
-            log::debug(
-                    logcat,
-                    "Rename failed: upload file already exists! Deleting tempfile, and responding");
-            abort_tempfile();
-            // DON'T return early here: we still want to insert_and_respond because this means there
-            // is a duplicate (either pre-existing, or a race with another identical upload), and so
-            // the upload actually was successful, but we still need to delete the (duplicate)
-            // tempfile.
-        } else
-            log::debug(
-                    logcat,
-                    "Tempfile successfully renamed to final location {}, responding",
-                    filepath);
+        log::debug(
+                logcat, "Tempfile successfully renamed to final location {}, responding", filepath);
 
-        insert_and_respond();
+        insert_file();
+        respond();
+    } else if (state == IO_STATE::cleanup_sleep) {
+        initiate_rename();
     } else {
         assert(!"Unknown state!");
     }
@@ -379,14 +366,81 @@ RETURNING EXTRACT(EPOCH FROM uploaded), EXTRACT(EPOCH FROM expiry))",
         send_chunks();
 }
 
+static constexpr __kernel_timespec cleanup_collide_sleep{
+        .tv_sec = 0, .tv_nsec = std::chrono::nanoseconds{20ms}.count()};
+
 void FileStream::put_req::initiate_rename() {
     assert(!fileid.empty());
     assert(!filepath.empty());
     assert(chunks.empty());
 
+    std::optional<bool> found_deleting;
+    if (str.handler.back_compat_ids)
+        // INSERT happened already and guaranteed unique; nothing else to do here.
+        found_deleting = std::nullopt;
+    else {
+        int max_ttl = str.handler.max_ttl.count();
+        std::string db_ttl =
+                "{} seconds"_format(std::clamp(ttl.value_or(max_ttl), MIN_TTL, max_ttl));
+
+        // We attempt to bump the expiry: if this matches (and doesn't give back a
+        // delete-in-progress row) then we just detected a safe existing duplicate and can just
+        // delete our tempfile because the existing file is good.
+        pg_retryable([&] {
+            pqxx::work tx{str.handler.pg_conn};
+
+            auto maybe_row = tx.exec(R"(
+UPDATE files SET expiry = GREATEST(expiry, NOW() + $2)
+WHERE id = $1
+RETURNING EXTRACT(EPOCH FROM uploaded), EXTRACT(EPOCH FROM expiry), deleting
+)",
+                                     pqxx::params{fileid, db_ttl})
+                                     .opt_row();
+            if (maybe_row) {
+                auto [upl, exp, deleting] = maybe_row->as<double, double, bool>();
+                uploaded =
+                        std::chrono::sys_seconds{std::chrono::seconds{static_cast<int64_t>(upl)}};
+                expiry = std::chrono::sys_seconds{std::chrono::seconds{static_cast<int64_t>(exp)}};
+                found_deleting = deleting;
+            }
+            tx.commit();
+        });
+    }
+
+    if (found_deleting && *found_deleting) {
+        // We updated, but the row we updated collided with an in-progress file deletion, so we need
+        // to go to sleep and retry in a few ms so that we don't get our file race-deleted with the
+        // current deletion of that same file.  (We did update the expiry, but that is irrelevant
+        // because once deleting is set there is no resurrecting it).
+        log::debug(logcat, "Upload file {} collided with delete-in-progress; delaying", fileid);
+        auto* sqe = io_uring_get_sqe(&str.handler.iou);
+        io_uring_sqe_set_data64(sqe, str.fsid);
+        cleanup_sleep = cleanup_collide_sleep;
+        io_uring_prep_timeout(sqe, &cleanup_sleep, 0, 0);
+        io_uring_submit(&str.handler.iou);
+        io_state = IO_STATE::cleanup_sleep;
+        return;
+    }
+
+    if (found_deleting /* implied: "and not *found_deleting" */) {
+        // We updated and the row is *not* currently being deleted, which means we found a live
+        // duplicate (and possibly updated its expiry) and so we can delete our tempfile (without
+        // worrying about fsyncing it, thus possibly saving some I/O) and return early.
+        log::debug(
+                logcat, "Upload file {} already exists; expiry updated; deleting tempfile", fileid);
+        abort_tempfile();
+        respond();
+        io_state = IO_STATE::none;
+        return;
+    }
+
+    // Otherwise our UPDATE didn't find any rows, which means this is a new file, so start the
+    // fsync+close+rename chain.  We will INSERT when we're done.  We *could* collide with another
+    // insert, but we deal with that when we get to the actual INSERT.
     log::debug(
             logcat,
-            "All data received; initiating renaming pool {} tempfile #{} ({}) to final location {}",
+            "File not found in DB; initiating sync+close+rename in pool {} tempfile #{} ({})"
+            " to final location {}",
             pool_id,
             fd,
             tmp_upload,
@@ -401,13 +455,14 @@ void FileStream::put_req::initiate_rename() {
     io_state = IO_STATE::rename_fsync;
 }
 
-void FileStream::put_req::insert_and_respond() {
+void FileStream::put_req::insert_file() {
     if (str.handler.back_compat_ids) {
         // In back-compat mode, the insert already happened in finalize() because we had to do it to
         // get the location to link the file into.
     } else {
         int max_ttl = str.handler.max_ttl.count();
-        std::string db_ttl = "{} seconds"_format(std::clamp(ttl.value_or(max_ttl), 1, max_ttl));
+        std::string db_ttl =
+                "{} seconds"_format(std::clamp(ttl.value_or(max_ttl), MIN_TTL, max_ttl));
         try {
             pg_retryable([&] {
                 pqxx::work tx{str.handler.pg_conn};
@@ -423,7 +478,7 @@ RETURNING EXTRACT(EPOCH FROM uploaded), EXTRACT(EPOCH FROM expiry), pool)",
                         std::chrono::sys_seconds{std::chrono::seconds{static_cast<int64_t>(upl)}};
                 expiry = std::chrono::sys_seconds{std::chrono::seconds{static_cast<int64_t>(exp)}};
                 if (pool != pool_id) {
-                    // The insert conflicts with a file in a *different* storage pool, and so we
+                    // The insert conflicted with a file in a *different* storage pool, and so we
                     // just updated the expiry date of that other file, but still have the file that
                     // we uploaded into *this* pool, which is not referenced by the db (because of
                     // the above failure) and so we need to delete it.
@@ -449,7 +504,9 @@ RETURNING EXTRACT(EPOCH FROM uploaded), EXTRACT(EPOCH FROM expiry), pool)",
             return;
         }
     }
+}
 
+void FileStream::put_req::respond() {
     oxenc::bt_dict_producer resp;
     resp.append("#", fileid);
     resp.append("u", uploaded.time_since_epoch().count());

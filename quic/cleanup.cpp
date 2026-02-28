@@ -29,73 +29,103 @@ namespace {
         }
 
         void cleanup() {
+            auto started = std::chrono::steady_clock::now();
+            // Two-phase mark-and-sweep deletion: first we mark everything expiring as deleting,
+            // which means they are gone but that the file might still exist.
+            //
+            // Then we get all files marked for deletion, and delete them from disk.
+            //
+            // Then we come back and actually delete the rows.
+            //
+            // This interacts with the PUT code which, if it sees a `deleting` row, goes to sleep
+            // for a little bit to let the cleanup thread do its thing, so that the cleanup + PUT
+            // can't race with how they write or delete duplicate files with the same id.
+
             pg_retryable([this] {
                 pqxx::work tx{conn};
+                tx.exec("UPDATE files SET deleting = TRUE WHERE expiry <= NOW()").no_rows();
+                tx.commit();
+            });
 
-                auto started = std::chrono::steady_clock::now();
-                std::vector<std::filesystem::path> removed;
-                unsigned submitted = 0;
-                for (auto [fileid, pool_name] :
-                     tx.query<std::string, std::string>("DELETE FROM pool_files"
-                                                        " WHERE expiry <= NOW()"
-                                                        " RETURNING id, pool_name")) {
-                    removed.push_back(
-                            base_dir / std::filesystem::path{pool_name} / id_to_path(fileid));
+            std::vector<std::pair<std::string, std::filesystem::path>> removed;
+            unsigned submitted = 0;
 
-                    auto* sqe = io_uring_get_sqe(&iou);
-                    if (!sqe) {
-                        io_uring_submit(&iou);
-                        sqe = io_uring_get_sqe(&iou);
-                    }
+            pg_retryable([this, &removed] {
+                pqxx::work tx{conn};
 
-                    io_uring_sqe_set_flags(sqe, 0);
-                    io_uring_sqe_set_data64(sqe, removed.size() - 1);
-                    io_uring_prep_unlink(sqe, removed.back().c_str(), 0);
-                    submitted++;
+                for (auto [fileid, pool_name] : tx.query<std::string, std::string>(
+                             "SELECT id, pool_name FROM pool_files WHERE deleting")) {
+                    std::filesystem::path p{
+                            base_dir / std::filesystem::path{pool_name} / id_to_path(fileid)};
+                    removed.emplace_back(std::move(fileid), std::move(p));
                 }
-                io_uring_submit(&iou);
 
-                bool success = true;
+                tx.commit();
+            });
 
-                while (submitted > 0) {
-                    unsigned nr = std::min<unsigned>(iou.cq.ring_entries, submitted);
-                    struct io_uring_cqe* cqe;
-                    io_uring_wait_cqe_nr(&iou, &cqe, nr);
+            if (removed.empty())
+                return;
 
+            for (size_t i = 0; i < removed.size(); i++) {
+                const auto& [id, path] = removed[i];
+
+                auto* sqe = io_uring_get_sqe(&iou);
+                if (!sqe) {
+                    io_uring_submit(&iou);
+                    sqe = io_uring_get_sqe(&iou);
+                }
+
+                io_uring_sqe_set_flags(sqe, 0);
+                io_uring_sqe_set_data64(sqe, i);
+                io_uring_prep_unlink(sqe, path.c_str(), 0);
+                submitted++;
+            }
+
+            io_uring_submit(&iou);
+
+            conn.prepare("cleanup_delete_row", "DELETE FROM files WHERE id = $1");
+            while (submitted > 0) {
+                unsigned nr = std::min<unsigned>(iou.cq.ring_entries, submitted);
+                struct io_uring_cqe* cqe;
+                io_uring_wait_cqe_nr(&iou, &cqe, nr);
+
+                pg_retryable([&] {
+                    pqxx::work tx{conn};
                     unsigned head;
                     io_uring_for_each_cqe(&iou, head, cqe) {
-                        const auto& id = removed[io_uring_cqe_get_data64(cqe)];
+                        const auto& [fileid, path] = removed[io_uring_cqe_get_data64(cqe)];
                         if (cqe->res < 0) {
                             if (cqe->res == -ENOENT)
-                                log::debug(logcat, "Failed to remove {}: file already gone", id);
+                                log::debug(logcat, "Failed to remove {}: file already gone", path);
                             else {
                                 log::warning(
-                                        logcat, "Failed to remove {}: {}", id, strerror(-cqe->res));
-                                success = false;
+                                        logcat,
+                                        "Failed to remove {}: {}",
+                                        path,
+                                        strerror(-cqe->res));
                             }
                         } else {
-                            log::debug(logcat, "Removed expired file {}", id);
+                            log::debug(logcat, "Removed expired file {}", path);
                         }
+                        tx.exec("DELETE FROM files WHERE id = $1", pqxx::params{fileid});
                     }
+
+                    tx.commit();
 
                     io_uring_cq_advance(&iou, nr);
 
                     submitted -= nr;
-                }
+                });
+            }
 
-                if (success) {
-                    log::info(
-                            logcat,
-                            "Deleted {} expired files in {}",
-                            removed.size(),
-                            std::chrono::steady_clock::now() - started);
-                    tx.commit();
-                } else
-                    tx.abort();
-            });
+            log::info(
+                    logcat,
+                    "Deleted {} expired files in {}",
+                    removed.size(),
+                    std::chrono::steady_clock::now() - started);
         }
 
-        bool wait() { return stop.wait_for(30s) == std::future_status::timeout; }
+        bool wait() { return stop.wait_for(10s) == std::future_status::timeout; }
     };
 }  // namespace
 
