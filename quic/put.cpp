@@ -300,6 +300,7 @@ void FileStream::put_req::finalize() {
                 received,
                 size);
         str.close(STREAM_ERROR::not_enough_data);
+        return;
     }
     log::debug(logcat, "Stream FIN received");
     got_all = true;
