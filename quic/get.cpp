@@ -70,7 +70,11 @@ void FileStream::get_req::close() {
         auto* sqe = io_uring_get_sqe(&str.handler.iou);
         io_uring_sqe_set_data64(sqe, 0);
         io_uring_sqe_set_flags(sqe, IOSQE_CQE_SKIP_SUCCESS);
+#ifdef SFS_DIRECT_FDS
         io_uring_prep_close_direct(sqe, fd);
+#else
+        io_uring_prep_close(sqe, fd);
+#endif
         io_uring_submit(&str.handler.iou);
     }
 
@@ -192,8 +196,12 @@ void FileStream::get_req::finalize() {
     sqe = io_uring_get_sqe(&str.handler.iou);
     io_uring_sqe_set_data64(sqe, str.fsid);
     io_uring_sqe_set_flags(sqe, 0);
+#ifdef SFS_DIRECT_FDS
     io_uring_prep_openat_direct(
             sqe, files_dir_fd, filepath.c_str(), O_RDONLY, 0644, IORING_FILE_INDEX_ALLOC);
+#else
+    io_uring_prep_openat(sqe, files_dir_fd, filepath.c_str(), O_RDONLY, 0644);
+#endif
 
     io_uring_submit(&str.handler.iou);
 }
@@ -219,7 +227,12 @@ void FileStream::get_req::queue_reads() {
         auto* sqe = io_uring_get_sqe(&str.handler.iou);
         io_uring_sqe_set_data64(sqe, str.fsid);
         io_uring_sqe_set_flags(
-                sqe, IOSQE_FIXED_FILE | (i == chunks_to_read - 1 ? 0 : IOSQE_IO_LINK));
+                sqe,
+                (i == chunks_to_read - 1 ? 0 : IOSQE_IO_LINK)
+#ifdef SFS_DIRECT_FDS
+                        | IOSQE_FIXED_FILE
+#endif
+        );
         io_uring_prep_read(sqe, fd, c.data(), CHUNK_SIZE, -1);
     }
     io_uring_submit(&str.handler.iou);

@@ -56,6 +56,7 @@ void FileStream::put_req::append(std::span<const std::byte> data) {
         auto* sqe = io_uring_get_sqe(&str.handler.iou);
         io_uring_sqe_set_data64(sqe, str.fsid);
         io_state = IO_STATE::opening;
+#ifdef SFS_DIRECT_FDS
         io_uring_prep_openat_direct(
                 sqe,
                 upload_dir_fd,
@@ -63,6 +64,10 @@ void FileStream::put_req::append(std::span<const std::byte> data) {
                 O_CREAT | O_EXCL | O_WRONLY,
                 0644,
                 IORING_FILE_INDEX_ALLOC);
+#else
+        io_uring_prep_openat(
+                sqe, upload_dir_fd, tmp_upload.c_str(), O_CREAT | O_EXCL | O_WRONLY, 0644);
+#endif
         io_uring_submit(&str.handler.iou);
     }
 
@@ -141,7 +146,9 @@ void FileStream::put_req::send_chunks(std::optional<size_t> _retry_offset) {
     auto* sqe = io_uring_get_sqe(&str.handler.iou);
     assert(sqe);
     io_uring_sqe_set_data64(sqe, str.fsid);
+#ifdef SFS_DIRECT_FDS
     io_uring_sqe_set_flags(sqe, IOSQE_FIXED_FILE);
+#endif
     if (iovecs.size() == 1)
         io_uring_prep_write(sqe, fd, iovecs[0].iov_base, iovecs[0].iov_len, -1);
     else
@@ -238,7 +245,11 @@ void FileStream::put_req::handle_cqe(io_uring_cqe* cqe) {
         log::debug(logcat, "tempfile {} fsync success; closing", tmp_upload);
 
         auto* sqe = io_uring_get_sqe(&str.handler.iou);
+#ifdef SFS_DIRECT_FDS
         io_uring_prep_close_direct(sqe, fd);
+#else
+        io_uring_prep_close(sqe, fd);
+#endif
         io_uring_sqe_set_data64(sqe, str.fsid);
         io_uring_submit(&str.handler.iou);
         fd = -1;  // We've just sent the close, so we're done with this fd.
@@ -448,7 +459,9 @@ RETURNING EXTRACT(EPOCH FROM uploaded), EXTRACT(EPOCH FROM expiry), deleting
 
     auto* sqe = io_uring_get_sqe(&str.handler.iou);
     io_uring_sqe_set_data64(sqe, str.fsid);
+#ifdef SFS_DIRECT_FDS
     io_uring_sqe_set_flags(sqe, IOSQE_FIXED_FILE);
+#endif
     io_uring_prep_fsync(sqe, fd, 0);
     io_uring_submit(&str.handler.iou);
 
@@ -523,7 +536,11 @@ void FileStream::put_req::abort_tempfile() {
         auto* sqe = io_uring_get_sqe(&str.handler.iou);
         io_uring_sqe_set_flags(sqe, IOSQE_CQE_SKIP_SUCCESS | IOSQE_IO_LINK);
         io_uring_sqe_set_data64(sqe, 0);
+#ifdef SFS_DIRECT_FDS
         io_uring_prep_close_direct(sqe, fd);
+#else
+        io_uring_prep_close(sqe, fd);
+#endif
         fd = -1;
     }
 

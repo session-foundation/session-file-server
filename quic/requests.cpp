@@ -201,10 +201,12 @@ ReqHandler::ReqHandler(
                     "Failed to initialize io_uring queue: {}"_format(strerror(-err))};
         cleanup.emplace_front([this] { io_uring_queue_exit(&iou); });
 
+#ifdef SFS_DIRECT_FDS
         if (int err = io_uring_register_files_sparse(&iou, MAX_OPEN_FILES); err != 0)
             throw std::runtime_error{
                     "Failed to initialize io_uring file descriptors: {}"_format(strerror(-err))};
         cleanup.emplace_front([this] { io_uring_unregister_files(&iou); });
+#endif
 
         iou_evfd = eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
         if (iou_evfd < 0)

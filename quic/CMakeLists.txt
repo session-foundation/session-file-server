@@ -66,6 +66,11 @@ target_link_libraries(quic-files
     PkgConfig::SYSTEMD
 )
 
+option(DIRECT_FDS "Use io_uring registered (direct) file descriptors for file I/O" ON)
+if(DIRECT_FDS)
+    target_compile_definitions(quic-files PRIVATE SFS_DIRECT_FDS)
+endif()
+
 include(GNUInstallDirs)
 install(TARGETS quic-files
     RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
