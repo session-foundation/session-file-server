@@ -147,16 +147,23 @@ class ReqHandler {
 /// Each of these streams is issued with an initial command block, optionally followed by stream
 /// data.  The response is an initial response block, optionally followed by stream data.
 ///
-/// Each command or response block is a bt-encoded string containing a bt-encoded dict of request
-/// data.  The inner encoded dict may be no larger than 9999 bytes.  E.g.
+/// **Framing:** Commands sent by the client are always size-prefixed: a decimal byte count,
+/// followed by ':', followed by the bt-encoded dict of that length.  The command dict may be no
+/// larger than 9999 bytes.  Server responses use a size prefix only when the metadata is followed
+/// by file data (i.e. GET responses); responses that contain only metadata (i.e. PUT responses)
+/// are sent as raw bt-encoded dicts without a size prefix.
 ///
-///     19:d1:!3:PUT1:si8192ee..................
+/// Example PUT command (size-prefixed, followed by file data):
 ///
-/// is a single upload command.  The reply (after successfully accepting the upload) could be:
+///     19:d1:!3:PUT1:si8192ee<8192 bytes of file data>
 ///
-///     67:d1:#44:abc…xyz1:xi1760388294ee
+/// Example PUT response (raw bt-dict, no size prefix, no trailing data):
 ///
-/// indicating the status of a successful upload.
+///     d1:#44:abc…xyz1:ui1760388294e1:xi1760391894ee
+///
+/// Example GET response (size-prefixed, followed by file data):
+///
+///     67:d1:si500000e1:ui1760388294e1:xi1760391894ee<500000 bytes of file data>
 ///
 /// Currently supported commands (which are in the "!" key):
 ///
