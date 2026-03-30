@@ -24,7 +24,7 @@ void FileStream::parse_get(oxenc::bt_dict_consumer&& d) {
 FileStream::get_req::get_req(FileStream& str, std::string id) : file_req{str, -1} {
     fileid = std::move(id);
 
-    auto info = db_lookup(str.handler.pg_conn, id);
+    auto info = db_lookup(str.handler.pg_conn, fileid);
 
     if (info) {
         expiry = info->expiry;
