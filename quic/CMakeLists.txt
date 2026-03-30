@@ -44,6 +44,7 @@ target_link_libraries(quic-files-common PUBLIC
     oxen::logging
     oxen::quic
     fmt::fmt
+    libpqxx::pqxx
 )
 
 add_executable(quic-files
@@ -59,7 +60,6 @@ target_link_libraries(quic-files
     quic-files-common
     PkgConfig::NLOHMANN_JSON
     PkgConfig::SODIUM
-    libpqxx::pqxx
     CLI11::CLI11
     PkgConfig::LIBURING
     PkgConfig::LIBEVENT_CORE
