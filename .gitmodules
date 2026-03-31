@@ -1,0 +1,9 @@
+[submodule "quic/oxen-libquic"]
+	path = quic/oxen-libquic
+	url = https://github.com/oxen-io/oxen-libquic.git
+[submodule "quic/libpqxx"]
+	path = quic/libpqxx
+	url = https://github.com/jtv/libpqxx.git
+[submodule "quic/CLI11"]
+	path = quic/CLI11
+	url = https://github.com/CLIUtils/CLI11.git
