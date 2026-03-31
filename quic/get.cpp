@@ -104,8 +104,21 @@ void FileStream::get_req::handle_cqe(io_uring_cqe* cqe) {
         }
         size = statxbuf.stx_size;
 
-        io_state = IO_STATE::opening;  // The open was chained immediately after the statx, so wait
-                                       // for it next.
+        // Submit the open as a separate operation rather than chaining it to the statx via
+        // IOSQE_IO_LINK because linked operations deliver corrupted CQE results on some older
+        // kernels (e.g. Debian bookworm's 6.1.x).
+        io_state = IO_STATE::opening;
+        {
+            auto* sqe = io_uring_get_sqe(&str.handler.iou);
+            io_uring_sqe_set_data64(sqe, str.fsid);
+#ifdef SFS_DIRECT_FDS
+            io_uring_prep_openat_direct(
+                    sqe, files_dir_fd, filepath.c_str(), O_RDONLY, 0644, IORING_FILE_INDEX_ALLOC);
+#else
+            io_uring_prep_openat(sqe, files_dir_fd, filepath.c_str(), O_RDONLY, 0644);
+#endif
+            io_uring_submit(&str.handler.iou);
+        }
 
     } else if (io_state == IO_STATE::opening) {
         if (cqe->res < 0) {
@@ -145,7 +158,7 @@ void FileStream::get_req::handle_cqe(io_uring_cqe* cqe) {
         if (cqe->res < 0) {
             log::error(
                     logcat,
-                    "Failed to open {}: {}; closing stream with I/O error code",
+                    "Failed to read {}: {}; closing stream with I/O error code",
                     filepath,
                     strerror(-cqe->res));
             str.close(STREAM_ERROR::io_error);
@@ -190,19 +203,7 @@ void FileStream::get_req::finalize() {
 
     auto* sqe = io_uring_get_sqe(&str.handler.iou);
     io_uring_sqe_set_data64(sqe, str.fsid);
-    io_uring_sqe_set_flags(sqe, IOSQE_IO_LINK);
     io_uring_prep_statx(sqe, files_dir_fd, filepath.c_str(), 0, STATX_SIZE, &statxbuf);
-
-    sqe = io_uring_get_sqe(&str.handler.iou);
-    io_uring_sqe_set_data64(sqe, str.fsid);
-    io_uring_sqe_set_flags(sqe, 0);
-#ifdef SFS_DIRECT_FDS
-    io_uring_prep_openat_direct(
-            sqe, files_dir_fd, filepath.c_str(), O_RDONLY, 0644, IORING_FILE_INDEX_ALLOC);
-#else
-    io_uring_prep_openat(sqe, files_dir_fd, filepath.c_str(), O_RDONLY, 0644);
-#endif
-
     io_uring_submit(&str.handler.iou);
 }
 
@@ -233,7 +234,7 @@ void FileStream::get_req::queue_reads() {
                         | IOSQE_FIXED_FILE
 #endif
         );
-        io_uring_prep_read(sqe, fd, c.data(), CHUNK_SIZE, -1);
+        io_uring_prep_read(sqe, fd, c.data(), CHUNK_SIZE, bytes_read + i * CHUNK_SIZE);
     }
     io_uring_submit(&str.handler.iou);
     io_state = IO_STATE::reading;
