@@ -16,12 +16,12 @@ namespace {
     class Cleaner {
         std::filesystem::path base_dir;
         io_uring iou;
-        pqxx::connection conn;
+        PGConn db;
         std::future<void> stop;
 
       public:
         Cleaner(std::filesystem::path base_dir, std::string pgsql_uri, std::future<void> stop) :
-                base_dir{std::move(base_dir)}, conn{pgsql_uri}, stop{std::move(stop)} {
+                base_dir{std::move(base_dir)}, db{std::move(pgsql_uri)}, stop{std::move(stop)} {
 
             if (int err = io_uring_queue_init(128, &iou, IORING_SETUP_SINGLE_ISSUER); err != 0)
                 throw std::runtime_error{
@@ -41,7 +41,7 @@ namespace {
             // for a little bit to let the cleanup thread do its thing, so that the cleanup + PUT
             // can't race with how they write or delete duplicate files with the same id.
 
-            pg_retryable([this] {
+            db.retryable([](pqxx::connection& conn) {
                 pqxx::work tx{conn};
                 tx.exec("UPDATE files SET deleting = TRUE WHERE expiry <= NOW()").no_rows();
                 tx.commit();
@@ -50,7 +50,9 @@ namespace {
             std::vector<std::pair<std::string, std::filesystem::path>> removed;
             unsigned submitted = 0;
 
-            pg_retryable([this, &removed] {
+            db.retryable([this, &removed](pqxx::connection& conn) {
+                removed.clear();
+
                 pqxx::work tx{conn};
 
                 for (auto [fileid, pool_name] : tx.query<std::string, std::string>(
@@ -83,13 +85,12 @@ namespace {
 
             io_uring_submit(&iou);
 
-            conn.prepare("cleanup_delete_row", "DELETE FROM files WHERE id = $1");
             while (submitted > 0) {
                 unsigned nr = std::min<unsigned>(iou.cq.ring_entries, submitted);
                 struct io_uring_cqe* cqe;
                 io_uring_wait_cqe_nr(&iou, &cqe, nr);
 
-                pg_retryable([&] {
+                db.retryable([&](pqxx::connection& conn) {
                     pqxx::work tx{conn};
                     unsigned head;
                     io_uring_for_each_cqe(&iou, head, cqe) {
@@ -142,6 +143,7 @@ std::thread start_cleanup_thread(
             cleaner.emplace(base_dir, pgsql_uri, std::move(stop));
         } catch (...) {
             started_prom.set_exception(std::current_exception());
+            return;
         }
 
         started_prom.set_value();

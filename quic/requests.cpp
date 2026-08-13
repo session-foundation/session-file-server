@@ -501,8 +501,8 @@ void ReqHandler::handle_file_extend(quic::message m) {
             "{} seconds"_format(std::clamp<int>(ttl.value_or(max_ttl.count()), 1, max_ttl.count()));
     std::chrono::sys_seconds uploaded, expiry;
     try {
-        pg_retryable([&] {
-            pqxx::work tx{pg_conn};
+        pg_conn.retryable([&](pqxx::connection& conn) {
+            pqxx::work tx{conn};
 
             auto result = tx.exec(R"(
 UPDATE files SET expiry = GREATEST(expiry, NOW() + $2)
@@ -566,9 +566,17 @@ void ReqHandler::refresh_pools() {
 
     bool active_changed = false;
 
-    pqxx::work tx{pg_conn};
-    for (auto [id, name, active] : tx.query<int, std::string, bool>(
-                 "SELECT id, name, active FROM storage_pools ORDER BY id")) {
+    std::vector<std::tuple<int, std::string, bool>> db_pools;
+    pg_conn.retryable([&](pqxx::connection& conn) {
+        db_pools.clear();
+        pqxx::work tx{conn};
+        for (auto row : tx.query<int, std::string, bool>(
+                     "SELECT id, name, active FROM storage_pools ORDER BY id"))
+            db_pools.push_back(std::move(row));
+        tx.commit();
+    });
+
+    for (auto& [id, name, active] : db_pools) {
         auto pool_path = base_path / std::filesystem::path{name};
 
         if (auto it = std::ranges::find(_pools, id, &file_pool::id); it != _pools.end()) {
@@ -661,8 +669,20 @@ void ReqHandler::refresh_pools() {
 const ReqHandler::file_pool& ReqHandler::choose_pool() {
     auto now = std::chrono::steady_clock::now();
     if (_pools.empty() || _pools_refresh_at <= now) {
-        refresh_pools();
         _pools_refresh_at = now + 30s;
+        try {
+            refresh_pools();
+        } catch (const std::exception& e) {
+            // If we already know about some active pools then a failed refresh (e.g. because the
+            // database is unreachable) shouldn't take down uploads: carry on with what we have and
+            // try again at the next refresh.
+            if (_active_pools_index.empty())
+                throw;
+            log::warning(
+                    logcat,
+                    "Failed to refresh storage pools: {}; continuing with current pool list",
+                    e.what());
+        }
     }
 
     ++_last_pool_index %= _active_pools_index.size();

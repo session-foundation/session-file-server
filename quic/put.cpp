@@ -286,8 +286,8 @@ void FileStream::put_req::handle_cqe(io_uring_cqe* cqe) {
         log::debug(
                 logcat, "Tempfile successfully renamed to final location {}, responding", filepath);
 
-        insert_file();
-        respond();
+        if (insert_file())
+            respond();
     } else if (state == IO_STATE::cleanup_sleep) {
         initiate_rename();
     } else {
@@ -343,8 +343,8 @@ void FileStream::put_req::finalize() {
             auto try_id = "{}"_format(bcid);
             double upl, exp;
             try {
-                pg_retryable([&] {
-                    pqxx::work tx{str.handler.pg_conn};
+                str.handler.pg_conn.retryable([&](pqxx::connection& conn) {
+                    pqxx::work tx{conn};
                     std::tie(upl, exp) = tx.exec(R"(
 INSERT INTO files (id, expiry, pool) VALUES ($1, NOW() + $2, $3)
 RETURNING EXTRACT(EPOCH FROM uploaded), EXTRACT(EPOCH FROM expiry))",
@@ -355,6 +355,10 @@ RETURNING EXTRACT(EPOCH FROM uploaded), EXTRACT(EPOCH FROM expiry))",
                 });
             } catch (const pqxx::unique_violation& e) {
                 continue;
+            } catch (const pqxx::failure& e) {
+                log::error(logcat, "Failed to insert DB record for upload: {}", e.what());
+                str.close(STREAM_ERROR::io_error);
+                return;
             }
             success = true;
             fileid = std::move(try_id);
@@ -397,25 +401,33 @@ void FileStream::put_req::initiate_rename() {
         // We attempt to bump the expiry: if this matches (and doesn't give back a
         // delete-in-progress row) then we just detected a safe existing duplicate and can just
         // delete our tempfile because the existing file is good.
-        pg_retryable([&] {
-            pqxx::work tx{str.handler.pg_conn};
+        try {
+            str.handler.pg_conn.retryable([&](pqxx::connection& conn) {
+                found_deleting.reset();
+                pqxx::work tx{conn};
 
-            auto maybe_row = tx.exec(R"(
+                auto maybe_row = tx.exec(R"(
 UPDATE files SET expiry = GREATEST(expiry, NOW() + $2)
 WHERE id = $1
 RETURNING EXTRACT(EPOCH FROM uploaded), EXTRACT(EPOCH FROM expiry), deleting
 )",
-                                     pqxx::params{fileid, db_ttl})
-                                     .opt_row();
-            if (maybe_row) {
-                auto [upl, exp, deleting] = maybe_row->as<double, double, bool>();
-                uploaded =
-                        std::chrono::sys_seconds{std::chrono::seconds{static_cast<int64_t>(upl)}};
-                expiry = std::chrono::sys_seconds{std::chrono::seconds{static_cast<int64_t>(exp)}};
-                found_deleting = deleting;
-            }
-            tx.commit();
-        });
+                                         pqxx::params{fileid, db_ttl})
+                                         .opt_row();
+                if (maybe_row) {
+                    auto [upl, exp, deleting] = maybe_row->as<double, double, bool>();
+                    uploaded = std::chrono::sys_seconds{
+                            std::chrono::seconds{static_cast<int64_t>(upl)}};
+                    expiry = std::chrono::sys_seconds{
+                            std::chrono::seconds{static_cast<int64_t>(exp)}};
+                    found_deleting = deleting;
+                }
+                tx.commit();
+            });
+        } catch (const pqxx::failure& e) {
+            log::error(logcat, "Failed to query DB for duplicate file {}: {}", fileid, e.what());
+            str.close(STREAM_ERROR::io_error);
+            return;
+        }
     }
 
     if (found_deleting && *found_deleting) {
@@ -468,7 +480,7 @@ RETURNING EXTRACT(EPOCH FROM uploaded), EXTRACT(EPOCH FROM expiry), deleting
     io_state = IO_STATE::rename_fsync;
 }
 
-void FileStream::put_req::insert_file() {
+bool FileStream::put_req::insert_file() {
     if (str.handler.back_compat_ids) {
         // In back-compat mode, the insert already happened in finalize() because we had to do it to
         // get the location to link the file into.
@@ -477,8 +489,8 @@ void FileStream::put_req::insert_file() {
         std::string db_ttl =
                 "{} seconds"_format(std::clamp(ttl.value_or(max_ttl), MIN_TTL, max_ttl));
         try {
-            pg_retryable([&] {
-                pqxx::work tx{str.handler.pg_conn};
+            str.handler.pg_conn.retryable([&](pqxx::connection& conn) {
+                pqxx::work tx{conn};
 
                 auto [upl, exp, pool] = tx.exec(R"(
 INSERT INTO files (id, expiry, pool) VALUES ($1, NOW() + $2, $3)
@@ -514,9 +526,10 @@ RETURNING EXTRACT(EPOCH FROM uploaded), EXTRACT(EPOCH FROM expiry), pool)",
         } catch (const pqxx::failure& e) {
             log::error(logcat, "Failed to insert DB record for file {}: {}", filepath, e.what());
             str.close(STREAM_ERROR::io_error);
-            return;
+            return false;
         }
     }
+    return true;
 }
 
 void FileStream::put_req::respond() {
@@ -579,9 +592,19 @@ void FileStream::parse_put(oxenc::bt_dict_consumer&& d) {
         return;
     }
 
-    const auto& pool = handler.choose_pool();
+    // Selecting a pool can hit the database, which can fail for reasons that have nothing to do
+    // with the request itself; without this the failure would land in the generic command parsing
+    // handler and be reported to the client as a malformed request.
+    const ReqHandler::file_pool* pool;
+    try {
+        pool = &handler.choose_pool();
+    } catch (const std::exception& e) {
+        log::error(logcat, "Unable to select a storage pool for upload: {}", e.what());
+        close(STREAM_ERROR::io_error);
+        return;
+    }
 
-    auto& put = request.emplace<put_req>(*this, std::move(size), std::move(ttl), pool);
+    auto& put = request.emplace<put_req>(*this, std::move(size), std::move(ttl), *pool);
     if (log::get_level(accesslog) >= log::Level::info) {
         auto ttl = put.ttl ? " (ttl={})"_format(*put.ttl) : "";
         if (auto conn = get_conn())

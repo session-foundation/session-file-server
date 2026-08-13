@@ -2,12 +2,25 @@
 
 namespace sfs {
 
-std::optional<file_db_info> db_lookup(pqxx::connection& conn, std::string_view fileid) {
+pqxx::connection& PGConn::conn() {
+    if (_conn && !_conn->is_open())
+        _conn.reset();
+
+    if (!_conn) {
+        _conn.emplace(uri);
+        log::info(db_logcat, "Connected to postgresql database");
+    }
+
+    return *_conn;
+}
+
+std::optional<file_db_info> db_lookup(PGConn& db, std::string_view fileid) {
     double upl, exp;
     int pool_id;
     bool found = false;
     try {
-        pg_retryable([&] {
+        db.retryable([&](pqxx::connection& conn) {
+            found = false;
             pqxx::work tx{conn};
             auto row = tx.exec(R"(
 SELECT EXTRACT(EPOCH FROM uploaded), EXTRACT(EPOCH FROM expiry), pool
@@ -23,7 +36,7 @@ FROM pool_files WHERE id = $1)",
             tx.commit();
         });
     } catch (const pqxx::failure& e) {
-        log::error(log::Cat("files.db"), "Failed to query files table: {}", e.what());
+        log::error(db_logcat, "Failed to query files table: {}", e.what());
     }
 
     std::optional<file_db_info> result;

@@ -10,9 +10,10 @@
 #include <memory>
 #include <oxen/quic/endpoint.hpp>
 #include <oxen/quic/stream.hpp>
-#include <pqxx/pqxx>
 #include <string_view>
 #include <variant>
+
+#include "common.hpp"
 
 namespace oxen::quic {
 struct message;
@@ -84,7 +85,7 @@ class ReqHandler {
     int iou_evfd;
     event* iou_ev;
 
-    pqxx::connection pg_conn;
+    PGConn pg_conn;
 
     static constexpr int MAX_OPEN_FILES = 200000;
 
@@ -342,7 +343,9 @@ class FileStream : public quic::Stream {
 
         void initiate_rename();
 
-        void insert_file();
+        // Inserts (or updates) the database record for the completed upload.  Returns false if the
+        // insert failed, in which case the stream has been closed with an error.
+        bool insert_file();
         void respond();
 
         // Called upon error to close (if still open) the tempfile and then unlink it.  These are
