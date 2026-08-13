@@ -524,17 +524,16 @@ RETURNING EXTRACT(EPOCH FROM uploaded), EXTRACT(EPOCH FROM expiry))",
         return;
     }
 
+    auto upl = uploaded.time_since_epoch().count();
+    auto exp = expiry.time_since_epoch().count();
+
     if (json) {
-        m.respond(nlohmann::json{
-                {"id", id},
-                {"uploaded", uploaded.time_since_epoch().count()},
-                {"expires", expiry.time_since_epoch().count()}}
-                          .dump());
+        m.respond(nlohmann::json{{"id", id}, {"uploaded", upl}, {"expires", exp}}.dump());
     } else {
         oxenc::bt_dict_producer res;
         res.append("#", id);
-        res.append("u", uploaded.time_since_epoch().count());
-        res.append("x", uploaded.time_since_epoch().count());
+        res.append("u", upl);
+        res.append("x", exp);
         m.respond(std::move(res).str());
     }
 }
