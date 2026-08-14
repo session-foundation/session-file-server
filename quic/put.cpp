@@ -8,7 +8,8 @@ namespace sfs {
 static auto logcat = log::Cat("files.put");
 static auto accesslog = log::Cat("access");
 
-constexpr auto FILE_ID_HASH_KEY = "SessionFileSvr\0\0"sv;
+constexpr auto FILE_ID_HASH_PERS = "SessionFileSvr\0\0"sv;
+
 constexpr int MIN_TTL = 30;
 
 FileStream::put_req::put_req(
@@ -20,11 +21,14 @@ FileStream::put_req::put_req(
 
     size = size_;
 
-    crypto_generichash_blake2b_init(
+    static_assert(FILE_ID_HASH_PERS.size() == crypto_generichash_blake2b_PERSONALBYTES);
+    crypto_generichash_blake2b_init_salt_personal(
             &b2b,
-            reinterpret_cast<const unsigned char*>(FILE_ID_HASH_KEY.data()),
-            FILE_ID_HASH_KEY.size(),
-            33);
+            nullptr,
+            0,
+            33,
+            nullptr,
+            reinterpret_cast<const unsigned char*>(FILE_ID_HASH_PERS.data()));
 }
 
 void FileStream::put_req::append(std::span<const std::byte> data) {
