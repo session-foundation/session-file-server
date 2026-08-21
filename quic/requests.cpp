@@ -16,6 +16,7 @@
 #include <oxen/quic/gnutls_crypto.hpp>
 #include <oxen/quic/opt.hpp>
 #include <type_traits>
+#include <unordered_set>
 #include <variant>
 
 #include "common.hpp"  // IWYU pragma: keep
@@ -555,55 +556,69 @@ void ReqHandler::refresh_pools() {
                     "Unable to open pool base path {}: {}"_format(p.files_path, strerror(errno))};
         bomb close_files{[&] { close(p.files_dir_fd); }};
 
+        // One readdir sweep of the pool dir is a handful of round trips even on NFS, so we scan
+        // what already exists and only mkdir the missing subdirs; on all but the first startup of
+        // a new pool this eliminates the (expensive on NFS) mkdir calls entirely.
+        std::unordered_set<std::string> existing;
+        for (const auto& entry : std::filesystem::directory_iterator{p.files_path})
+            existing.insert(entry.path().filename().string());
+
         std::vector<std::string> subdirs;
+        auto add_if_missing = [&](std::string name) {
+            if (!existing.count(name))
+                subdirs.push_back(std::move(name));
+        };
         if (bc) {
-            subdirs.reserve(1000);
             for (int i = 0; i < 1000; i++)
-                subdirs.push_back("{:03d}"_format(i));
+                add_if_missing("{:03d}"_format(i));
         } else {
-            subdirs.reserve(b64_url_chars.size() * b64_url_chars.size());
             for (auto a : b64_url_chars)
                 for (auto b : b64_url_chars)
-                    subdirs.push_back("{}{}"_format(a, b));
+                    add_if_missing("{}{}"_format(a, b));
         }
 
-        // We create the subdirs in concurrent batches through a temporary io_uring rather than
-        // sequentially: on NFS each mkdir is a synchronous server round trip, and thousands of them
-        // back to back stalls startup for many seconds.  (We use a dedicated ring because the main
-        // ring isn't set up yet during the initial constructor-time refresh, and at runtime it has
-        // in-flight stream operations that we can't reap synchronously from here.)
-        constexpr unsigned MKDIR_BATCH = 256;
-        io_uring ring;
-        if (int err = io_uring_queue_init(MKDIR_BATCH, &ring, 0); err != 0)
-            throw std::runtime_error{
-                    "Failed to initialize io_uring for pool subdir creation: {}"_format(
-                            strerror(-err))};
-        bomb ring_exit{[&] { io_uring_queue_exit(&ring); }};
+        if (!subdirs.empty()) {
+            log::info(logcat, "Creating {} missing subdirs in {}", subdirs.size(), p.files_path);
 
-        for (size_t i = 0; i < subdirs.size(); i += MKDIR_BATCH) {
-            const unsigned n = std::min<size_t>(MKDIR_BATCH, subdirs.size() - i);
-            for (unsigned j = 0; j < n; j++) {
-                auto* sqe = io_uring_get_sqe(&ring);
-                io_uring_prep_mkdirat(sqe, p.files_dir_fd, subdirs[i + j].c_str(), 0777);
-                io_uring_sqe_set_data64(sqe, i + j);
-            }
-            if (int err = io_uring_submit_and_wait(&ring, n); err < 0)
+            // We create the subdirs in concurrent batches through a temporary io_uring rather than
+            // sequentially: on NFS each mkdir is a synchronous server round trip, and thousands of
+            // them back to back stalls startup for many seconds.  (We use a dedicated ring because
+            // the main ring isn't set up yet during the initial constructor-time refresh, and at
+            // runtime it has in-flight stream operations that we can't reap synchronously from
+            // here.)
+            constexpr unsigned MKDIR_BATCH = 256;
+            io_uring ring;
+            if (int err = io_uring_queue_init(MKDIR_BATCH, &ring, 0); err != 0)
                 throw std::runtime_error{
-                        "Failed to submit pool subdir mkdirs: {}"_format(strerror(-err))};
+                        "Failed to initialize io_uring for pool subdir creation: {}"_format(
+                                strerror(-err))};
+            bomb ring_exit{[&] { io_uring_queue_exit(&ring); }};
 
-            std::optional<std::string> failure;
-            unsigned head, count = 0;
-            io_uring_cqe* cqe;
-            io_uring_for_each_cqe(&ring, head, cqe) {
-                count++;
-                if (cqe->res < 0 && cqe->res != -EEXIST && !failure)
-                    failure = "Unable to create pool subdir {}: {}"_format(
-                            p.files_path / subdirs[io_uring_cqe_get_data64(cqe)],
-                            strerror(-cqe->res));
+            for (size_t i = 0; i < subdirs.size(); i += MKDIR_BATCH) {
+                const unsigned n = std::min<size_t>(MKDIR_BATCH, subdirs.size() - i);
+                for (unsigned j = 0; j < n; j++) {
+                    auto* sqe = io_uring_get_sqe(&ring);
+                    io_uring_prep_mkdirat(sqe, p.files_dir_fd, subdirs[i + j].c_str(), 0777);
+                    io_uring_sqe_set_data64(sqe, i + j);
+                }
+                if (int err = io_uring_submit_and_wait(&ring, n); err < 0)
+                    throw std::runtime_error{
+                            "Failed to submit pool subdir mkdirs: {}"_format(strerror(-err))};
+
+                std::optional<std::string> failure;
+                unsigned head, count = 0;
+                io_uring_cqe* cqe;
+                io_uring_for_each_cqe(&ring, head, cqe) {
+                    count++;
+                    if (cqe->res < 0 && cqe->res != -EEXIST && !failure)
+                        failure = "Unable to create pool subdir {}: {}"_format(
+                                p.files_path / subdirs[io_uring_cqe_get_data64(cqe)],
+                                strerror(-cqe->res));
+                }
+                io_uring_cq_advance(&ring, count);
+                if (failure)
+                    throw std::runtime_error{std::move(*failure)};
             }
-            io_uring_cq_advance(&ring, count);
-            if (failure)
-                throw std::runtime_error{std::move(*failure)};
         }
 
         close_upload.disarm();
