@@ -542,25 +542,72 @@ void ReqHandler::refresh_pools() {
     auto pool_open = [bc = back_compat_ids](file_pool& p) {
         auto upload_path = p.files_path / "uploads";
         std::filesystem::create_directories(upload_path);
-        if (bc)
-            for (int i = 0; i < 1000; i++)
-                std::filesystem::create_directories(p.files_path / "{:03d}"_format(i));
-        else
-            for (auto a : b64_url_chars)
-                for (auto b : b64_url_chars)
-                    std::filesystem::create_directories(p.files_path / "{}{}"_format(a, b));
 
         p.upload_dir_fd = open(upload_path.c_str(), O_PATH | O_DIRECTORY);
         if (p.upload_dir_fd < 0)
             throw std::runtime_error{
                     "Unable to open pool upload path {}: {}"_format(upload_path, strerror(errno))};
+        bomb close_upload{[&] { close(p.upload_dir_fd); }};
 
         p.files_dir_fd = open(p.files_path.c_str(), O_PATH | O_DIRECTORY);
-        if (p.files_dir_fd < 0) {
-            close(p.upload_dir_fd);
+        if (p.files_dir_fd < 0)
             throw std::runtime_error{
                     "Unable to open pool base path {}: {}"_format(p.files_path, strerror(errno))};
+        bomb close_files{[&] { close(p.files_dir_fd); }};
+
+        std::vector<std::string> subdirs;
+        if (bc) {
+            subdirs.reserve(1000);
+            for (int i = 0; i < 1000; i++)
+                subdirs.push_back("{:03d}"_format(i));
+        } else {
+            subdirs.reserve(b64_url_chars.size() * b64_url_chars.size());
+            for (auto a : b64_url_chars)
+                for (auto b : b64_url_chars)
+                    subdirs.push_back("{}{}"_format(a, b));
         }
+
+        // We create the subdirs in concurrent batches through a temporary io_uring rather than
+        // sequentially: on NFS each mkdir is a synchronous server round trip, and thousands of them
+        // back to back stalls startup for many seconds.  (We use a dedicated ring because the main
+        // ring isn't set up yet during the initial constructor-time refresh, and at runtime it has
+        // in-flight stream operations that we can't reap synchronously from here.)
+        constexpr unsigned MKDIR_BATCH = 256;
+        io_uring ring;
+        if (int err = io_uring_queue_init(MKDIR_BATCH, &ring, 0); err != 0)
+            throw std::runtime_error{
+                    "Failed to initialize io_uring for pool subdir creation: {}"_format(
+                            strerror(-err))};
+        bomb ring_exit{[&] { io_uring_queue_exit(&ring); }};
+
+        for (size_t i = 0; i < subdirs.size(); i += MKDIR_BATCH) {
+            const unsigned n = std::min<size_t>(MKDIR_BATCH, subdirs.size() - i);
+            for (unsigned j = 0; j < n; j++) {
+                auto* sqe = io_uring_get_sqe(&ring);
+                io_uring_prep_mkdirat(sqe, p.files_dir_fd, subdirs[i + j].c_str(), 0777);
+                io_uring_sqe_set_data64(sqe, i + j);
+            }
+            if (int err = io_uring_submit_and_wait(&ring, n); err < 0)
+                throw std::runtime_error{
+                        "Failed to submit pool subdir mkdirs: {}"_format(strerror(-err))};
+
+            std::optional<std::string> failure;
+            unsigned head, count = 0;
+            io_uring_cqe* cqe;
+            io_uring_for_each_cqe(&ring, head, cqe) {
+                count++;
+                if (cqe->res < 0 && cqe->res != -EEXIST && !failure)
+                    failure = "Unable to create pool subdir {}: {}"_format(
+                            p.files_path / subdirs[io_uring_cqe_get_data64(cqe)],
+                            strerror(-cqe->res));
+            }
+            io_uring_cq_advance(&ring, count);
+            if (failure)
+                throw std::runtime_error{std::move(*failure)};
+        }
+
+        close_upload.disarm();
+        close_files.disarm();
     };
 
     bool active_changed = false;
