@@ -254,7 +254,7 @@ ReqHandler::ReqHandler(
             x.disarm();
 
         auto last_logged = std::chrono::steady_clock::now();
-        stats_timer = loop.call_every(5s, [this, last_logged]() mutable {
+        loop.add_timer(5s, [this, last_logged]() mutable {
             sd_notify(
                     0,
                     "WATCHDOG=1\nSTATUS=Running.  Requests: "

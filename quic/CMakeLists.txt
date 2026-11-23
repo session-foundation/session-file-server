@@ -30,7 +30,7 @@ system_or_submodule(OXENLOGGING oxen-logging oxen::logging liboxen-logging>=1.2.
 system_or_submodule(FMT fmt fmt::fmt fmt>=9 oxen-libquic/external/oxen-logging/fmt)
 system_or_submodule(LIBPQXX libpqxx libpqxx::pqxx libpqxx>=7.10.0 libpqxx)
 system_or_submodule(CLI11 CLI11 CLI11::CLI11 CLI11>=2.3.0 CLI11)
-system_or_submodule(OXENQUIC quic oxen::quic liboxenquic>=1.6 oxen-libquic)
+system_or_submodule(OXENQUIC quic oxen::quic liboxenquic>=1.14 oxen-libquic)
 
 pkg_check_modules(NLOHMANN_JSON IMPORTED_TARGET REQUIRED nlohmann_json>=3.7.0)
 pkg_check_modules(SODIUM IMPORTED_TARGET REQUIRED libsodium>=1.0.17)

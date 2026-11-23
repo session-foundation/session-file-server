@@ -78,7 +78,6 @@ class ReqHandler {
 
     req_stats overall{};
     req_stats recent{}, recent_old{};
-    std::shared_ptr<quic::Ticker> stats_timer;
 
     std::filesystem::path base_path;
     io_uring iou;
