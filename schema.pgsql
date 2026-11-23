@@ -13,10 +13,12 @@ CREATE TABLE files (
     id VARCHAR(44) PRIMARY KEY CHECK(id ~ '^[a-zA-Z0-9_-]+$'),
     uploaded TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
     expiry TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW() + '30 days',
-    pool INTEGER NOT NULL REFERENCES storage_pools(id) ON DELETE CASCADE
+    pool INTEGER NOT NULL REFERENCES storage_pools(id) ON DELETE CASCADE,
+    deleting BOOLEAN NOT NULL DEFAULT FALSE
 );
 
 CREATE INDEX files_expiry ON files(expiry);
+CREATE INDEX files_deleting ON files((TRUE)) WHERE deleting;
 
 CREATE VIEW pool_files AS
     SELECT *, (SELECT name FROM storage_pools WHERE id = pool) AS pool_name

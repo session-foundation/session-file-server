@@ -4,3 +4,6 @@ __pycache__
 /key_x25519
 .vscode
 .venv
+/quic/build*
+/quic/compile_commands.json
+/quic/.cache

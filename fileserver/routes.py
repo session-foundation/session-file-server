@@ -56,7 +56,7 @@ def generate_file_id(data):
     to fit perfectly).
     """
     return urlsafe_b64encode(
-        blake2b(data, digest_size=33, salt=b"SessionFileSvr\0\0").digest()
+        blake2b(data, digest_size=33, person=b"SessionFileSvr\0\0").digest()
     ).decode()
 
 
