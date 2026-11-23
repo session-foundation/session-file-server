@@ -20,10 +20,14 @@ def pg_connect():
         return
 
     conninfo = config.pgsql_connect_opts.pop('conninfo', '')
+    # No psql_pool.wait() here: if the pool can't fill within its timeout, wait() *closes* the pool
+    # permanently.  That happens when a worker spawns while postgresql is down or still starting
+    # (e.g. at boot), and since uwsgi swallows postfork exceptions the worker keeps running with a
+    # dead pool and fails every request with PoolClosed.  Without it, the pool keeps retrying in the
+    # background and starts serving requests once the database is reachable.
     psql_pool = ConnectionPool(
         conninfo, open=True, min_size=2, max_size=32, kwargs={**config.pgsql_connect_opts, "autocommit": True}
     )
-    psql_pool.wait()
 
 
 @atexit.register
